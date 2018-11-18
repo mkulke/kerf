@@ -1,0 +1,6 @@
+[package]
+name = "kerfuffle"
+version = "0.1.0"
+authors = ["Magnus Kulke <mkulke@gmail.com>"]
+
+[dependencies]
