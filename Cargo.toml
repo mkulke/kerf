@@ -3,4 +3,14 @@ name = "kerfuffle"
 version = "0.1.0"
 authors = ["Magnus Kulke <mkulke@gmail.com>"]
 
+[lib]
+name = "protos"
+path = "src/protos/mod.rs"
+
 [dependencies]
+grpcio = { version = "0.4", default-features = false, features = ["protobuf-codec"] }
+protobuf = "2.0.5"
+futures = "0.1.25"
+
+[build-dependencies]
+protoc-grpcio = "0.3.1"
