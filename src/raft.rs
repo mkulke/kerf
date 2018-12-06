@@ -1,0 +1,5 @@
+enum {
+    Leader,
+    Follower,
+    Candidate,
+}

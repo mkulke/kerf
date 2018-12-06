@@ -1,5 +1,6 @@
 extern crate grpcio;
 extern crate protos;
+extern crate tokio;
 #[macro_use]
 extern crate failure;
 
@@ -7,11 +8,19 @@ use failure::Error;
 use std::env;
 use std::process;
 use std::sync::Arc;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use grpcio::{ChannelBuilder, EnvBuilder};
 
+use tokio::prelude::{Future, Stream};
+use tokio::timer::Interval;
+
 use protos::hello::HelloRequest;
 use protos::hello_grpc::GreeterClient;
+
+use protos::raft::VoteRequest;
+use protos::raft_grpc::LeaderElectionClient;
 
 #[derive(Debug, Fail)]
 enum DomainError {
@@ -59,6 +68,12 @@ fn get_client(port: String) -> GreeterClient {
     GreeterClient::new(ch)
 }
 
+fn get_raft_client(host: String, port: String) -> LeaderElectionClient {
+    let env = Arc::new(EnvBuilder::new().build());
+    let ch = ChannelBuilder::new(env).connect(format!("{}:{}", host, port).as_str());
+    LeaderElectionClient::new(ch)
+}
+
 fn send(client: GreeterClient, name: String) -> Result<(), Error> {
     let mut req = HelloRequest::new();
     req.set_name(name);
@@ -67,17 +82,39 @@ fn send(client: GreeterClient, name: String) -> Result<(), Error> {
     Ok(())
 }
 
+fn request_vote(client: LeaderElectionClient) -> Result<bool, Error> {
+    let mut req = VoteRequest::new();
+    req.set_term(1);
+    let reply = client.request_vote(&req)?;
+    let yes = reply.get_yes();
+    println!("Client received: {}", yes);
+    Ok(yes)
+}
+
 fn do_business() -> Result<(), Error> {
     assert_args()?;
     let port = get_port()?;
-    let name = get_name();
-    let client = get_client(port);
-    send(client, name)
+    let _name = get_name();
+    // let client = get_client(port);
+    // send(client, name)?;
+    let client = get_raft_client(String::from("localhost"), port);
+    request_vote(client)?;
+    Ok(())
 }
 
 fn main() -> () {
-    let x = do_business();
-    if let Err(err) = x {
-        bail_out(err);
+    // let task = Interval::new(Instant::now(), Duration::from_millis(100))
+    //     .take(10)
+    //     .for_each(|instant| {
+    //         println!("fire; instant={:?}", instant);
+    //         Ok(())
+    //     }).map_err(|e| panic!("interval errored; err={:?}", e));
+    // tokio::run(task);
+    loop {
+        sleep(Duration::new(2, 0));
+        let x = do_business();
+        if let Err(err) = x {
+            bail_out(err);
+        }
     }
 }

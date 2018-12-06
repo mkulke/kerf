@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package raft;
+
+service LeaderElection {
+  rpc RequestVote (VoteRequest) returns (VoteReply) {}
+}
+
+message VoteRequest {
+  uint64 term = 1;
+}
+
+message VoteReply {
+  bool yes = 1;
+}
