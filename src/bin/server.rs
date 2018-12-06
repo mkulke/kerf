@@ -65,7 +65,8 @@ fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
                 .required(true)
                 .takes_value(true)
                 .validator(is_host_port),
-        ).arg(
+        )
+        .arg(
             Arg::with_name("cluster")
                 .long("cluster")
                 .short("c")
@@ -121,7 +122,7 @@ fn start_server(listen: SocketAddrV4) -> Result<Server, Error> {
     Ok(server)
 }
 
-fn bail_out(err: Error) -> () {
+fn bail_out(err: &Error) -> () {
     eprintln!("{}", err);
     process::exit(1);
 }
@@ -141,14 +142,15 @@ fn request_vote(addr: &SocketAddrV4) -> impl Future<Item = bool, Error = ()> {
     let mut req = VoteRequest::new();
     req.set_term(1);
     let res = client.request_vote_async(&req);
-    let ip = addr.ip().clone();
+    let ip = *addr.ip();
     match res {
         Ok(y) => Either::A(
             y.map(|z| z.get_yes())
                 .map_err(move |e| {
                     eprintln!("Failed to send request to {:?}: {:?}", ip, e);
                     ()
-                }).or_else(|_| Ok(false)),
+                })
+                .or_else(|_| Ok(false)),
         ),
         Err(_) => Either::B(ok::<bool, ()>(false)),
     }
@@ -181,10 +183,10 @@ fn main() -> () {
     let listen = value_t!(matches, "listen", SocketAddrV4).unwrap();
     let cluster = values_t!(matches, "cluster", SocketAddrV4).unwrap();
     let config = Config { listen, cluster };
-    if let Err(err) = start_server(config.listen) {
+    if let Err(ref err) = start_server(config.listen) {
         bail_out(err);
     }
-    if let Err(err) = do_business(config.cluster) {
+    if let Err(ref err) = do_business(config.cluster) {
         bail_out(err);
     }
 }
