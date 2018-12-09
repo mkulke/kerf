@@ -1,6 +1,5 @@
 #[macro_use]
 extern crate clap;
-#[macro_use]
 extern crate failure;
 extern crate futures;
 extern crate grpcio;
@@ -18,9 +17,12 @@ use tokio::timer::Delay;
 
 use failure::Error;
 
+use std::io::Read;
+use std::{io, thread};
+
 use futures::future::lazy;
-use futures::sync::mpsc;
 use futures::sync::mpsc::UnboundedSender;
+use futures::sync::{mpsc, oneshot};
 use futures::Future;
 
 use grpcio::{ChannelBuilder, EnvBuilder};
@@ -224,10 +226,25 @@ fn main() -> () {
     let listen = value_t!(matches, "listen", SocketAddrV4).unwrap();
     let cluster = values_t!(matches, "cluster", SocketAddrV4).unwrap();
     let config = Config { listen, cluster };
-    if let Err(ref err) = start_server(config.clone()) {
-        bail_out(err);
-    }
-    if let Err(ref err) = do_business(config.clone().cluster) {
-        bail_out(err);
+    // if let Err(ref err) = start_server(config.clone()) {
+    //     bail_out(err);
+    // }
+    // if let Err(ref err) = do_business(config.clone().cluster) {
+    //     bail_out(err);
+    // }
+    match start_server(config.clone()) {
+        Err(ref err) => {
+            bail_out(err);
+        }
+        Ok(mut server) => {
+            let (tx, rx) = oneshot::channel();
+            thread::spawn(move || {
+                println!("Press ENTER to exit...");
+                let _ = io::stdin().read(&mut [0]).unwrap();
+                tx.send(())
+            });
+            let _ = rx.wait();
+            let _ = server.shutdown().wait();
+        }
     }
 }
