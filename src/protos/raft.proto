@@ -8,6 +8,7 @@ service LeaderElection {
 
 message VoteRequest {
   uint64 term = 1;
+  string candidate = 2;
 }
 
 message VoteReply {

@@ -1,5 +1,6 @@
 #[macro_use]
 extern crate clap;
+#[macro_use]
 extern crate failure;
 extern crate futures;
 extern crate grpcio;
@@ -18,34 +19,45 @@ use tokio::timer::Delay;
 use failure::Error;
 
 use futures::future::lazy;
+use futures::sync::mpsc;
+use futures::sync::mpsc::UnboundedSender;
 use futures::Future;
 
 use grpcio::{ChannelBuilder, EnvBuilder};
-use grpcio::{Environment, RpcContext, Server, ServerBuilder, UnarySink};
+use grpcio::{Environment, RpcContext, RpcStatus, RpcStatusCode, Server, ServerBuilder, UnarySink};
 
 use std::process;
 
-use protos::hello::{HelloReply, HelloRequest};
-use protos::hello_grpc::Greeter;
-
 use protos::raft::{VoteReply, VoteRequest};
 use protos::raft_grpc::{self, LeaderElection};
-
 // use protos::raft::VoteRequest;
 use protos::raft_grpc::LeaderElectionClient;
 
 use clap::{App, Arg};
 
+#[derive(Clone)]
 struct Config {
     listen: SocketAddrV4,
     cluster: Vec<SocketAddrV4>,
 }
 
 #[derive(Clone)]
-struct GreeterService;
+enum VotedFor {
+    Candidate(SocketAddrV4),
+    NoOne,
+}
 
 #[derive(Clone)]
-struct LeaderElectionService;
+struct LeaderElectionService {
+    config: Config,
+    current_term: u64,
+    voted_for: VotedFor,
+    tx: UnboundedSender<Message>,
+}
+
+enum Message {
+    VotedFor(SocketAddrV4),
+}
 
 fn is_host_port(val: String) -> Result<(), String> {
     match val.parse::<SocketAddrV4>() {
@@ -77,43 +89,72 @@ fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
         )
 }
 
+impl LeaderElectionService {
+    fn to_member(&self, candidate: String) -> Option<&SocketAddrV4> {
+        self.config
+            .cluster
+            .iter()
+            .find(|member| format!("{}:{}", member.ip(), member.port()) == candidate)
+    }
+
+    fn vote_yes(
+        &self,
+        member: &SocketAddrV4,
+        sink: UnarySink<VoteReply>,
+    ) -> Box<Future<Item = (), Error = grpcio::Error> + Send> {
+        let mut rep = VoteReply::new();
+        let tx = self.tx.clone();
+        rep.set_yes(true);
+        let message = Message::VotedFor(*member);
+        Box::new(sink.success(rep.clone()).inspect(move |_| {
+            let _ = tx.unbounded_send(message);
+        }))
+    }
+}
+
 impl LeaderElection for LeaderElectionService {
     fn request_vote(
         &mut self,
         ctx: RpcContext,
-        _req: VoteRequest,
+        req: VoteRequest,
         sink: UnarySink<VoteReply>,
     ) -> () {
-        let mut reply = VoteReply::new();
-        reply.set_yes(true);
-        let f = sink
-            .success(reply.clone())
-            .map_err(move |err| eprintln!("Failed to reply: {:?}", err));
-        ctx.spawn(f)
+        let mut rep = VoteReply::new();
+        let fut = match &self.voted_for {
+            VotedFor::Candidate(_) => {
+                rep.set_yes(false);
+                Box::new(sink.success(rep.clone()))
+            }
+            VotedFor::NoOne => {
+                let member = self.to_member(req.candidate);
+                match member {
+                    None => Box::new(sink.fail(RpcStatus::new(
+                        RpcStatusCode::InvalidArgument,
+                        Some("candidate not in member list".to_string()),
+                    ))),
+                    Some(m) => self.vote_yes(m, sink),
+                }
+            }
+        };
+        ctx.spawn(fut.map_err(|err| eprintln!("Failed to reply: {:?}", err)))
     }
 }
 
-impl Greeter for GreeterService {
-    fn say_hello(&mut self, ctx: RpcContext, req: HelloRequest, sink: UnarySink<HelloReply>) -> () {
-        println!("Received HelloRequest {{ {:?} }}", req);
-        let mut reply = HelloReply::new();
-        reply.set_message(format!("Hello {}!", req.get_name()));
-        let f = sink
-            .success(reply.clone())
-            .map(move |_| println!("Responded with HelloReply {{ {:?} }}", reply))
-            .map_err(move |err| eprintln!("Failed to reply: {:?}", err));
-        ctx.spawn(f)
-    }
-}
-
-fn start_server(listen: SocketAddrV4) -> Result<Server, Error> {
+fn start_server(config: Config) -> Result<Server, Error> {
     let env = Arc::new(Environment::new(1));
-    // let service = hello_grpc::create_greeter(GreeterService);
-    let service = raft_grpc::create_leader_election(LeaderElectionService);
+    let (tx, _rx) = mpsc::unbounded();
+    let ip = config.listen.ip().to_string();
+    let port = config.listen.port();
+    let service = LeaderElectionService {
+        tx: tx,
+        config: config,
+        current_term: 0,
+        voted_for: VotedFor::NoOne,
+    };
+    let grpc_service = raft_grpc::create_leader_election(service);
     let mut server = ServerBuilder::new(env)
-        .register_service(service)
-        .bind(listen.ip().to_string(), listen.port())
-        // .bind("127.0.0.1", 0)
+        .register_service(grpc_service)
+        .bind(ip, port)
         .build()?;
     server.start();
     for &(ref host, port) in server.bind_addrs() {
@@ -183,10 +224,10 @@ fn main() -> () {
     let listen = value_t!(matches, "listen", SocketAddrV4).unwrap();
     let cluster = values_t!(matches, "cluster", SocketAddrV4).unwrap();
     let config = Config { listen, cluster };
-    if let Err(ref err) = start_server(config.listen) {
+    if let Err(ref err) = start_server(config.clone()) {
         bail_out(err);
     }
-    if let Err(ref err) = do_business(config.cluster) {
+    if let Err(ref err) = do_business(config.clone().cluster) {
         bail_out(err);
     }
 }
