@@ -1,15 +1,18 @@
+#[macro_use]
+extern crate clap;
 extern crate grpcio;
 extern crate protos;
 extern crate tokio;
-#[macro_use]
-extern crate failure;
+
+mod util;
 
 use failure::Error;
-use std::env;
 use std::process;
 use std::sync::Arc;
 // use std::thread::sleep;
 // use std::time::{Duration, Instant};
+
+use std::net::SocketAddrV4;
 
 use grpcio::{ChannelBuilder, EnvBuilder};
 
@@ -19,35 +22,34 @@ use grpcio::{ChannelBuilder, EnvBuilder};
 use protos::raft::VoteRequest;
 use protos::raft_grpc::LeaderElectionClient;
 
-#[derive(Debug, Fail)]
-enum DomainError {
-    #[fail(display = "{} is not a valid port number", port)]
-    NoPortNumber { port: String },
-    #[fail(display = "expected 1 argument")]
-    ArgumentError,
-}
+use clap::{App, Arg};
 
 fn bail_out(err: Error) -> () {
     eprintln!("{}", err);
     process::exit(1);
 }
 
-fn get_port() -> Result<String, DomainError> {
-    let args = env::args().collect::<Vec<_>>();
-    let first_arg = args.get(1).ok_or(DomainError::ArgumentError)?;
-    first_arg
-        .parse::<u16>()
-        .map_err(|_| DomainError::NoPortNumber {
-            port: first_arg.to_string(),
-        })?;
-    Ok(first_arg.to_string())
+fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
+    App::new("kerfuffle client")
+        .version(crate_version!())
+        .author(crate_authors!())
+        .arg(
+            Arg::with_name("server")
+                .long("server")
+                .short("s")
+                .required(true)
+                .takes_value(true)
+                .validator(util::is_host_port),
+        )
+        .arg(
+            Arg::with_name("candidate")
+                .long("candidate")
+                .short("c")
+                .required(true)
+                .takes_value(true)
+                .validator(util::is_host_port),
+        )
 }
-
-// fn get_client(port: String) -> GreeterClient {
-//     let env = Arc::new(EnvBuilder::new().build());
-//     let ch = ChannelBuilder::new(env).connect(format!("localhost:{}", port).as_str());
-//     GreeterClient::new(ch)
-// }
 
 fn get_raft_client(host: String, port: String) -> LeaderElectionClient {
     let env = Arc::new(EnvBuilder::new().build());
@@ -55,42 +57,28 @@ fn get_raft_client(host: String, port: String) -> LeaderElectionClient {
     LeaderElectionClient::new(ch)
 }
 
-fn request_vote(client: LeaderElectionClient) -> Result<bool, Error> {
+fn request_vote(client: LeaderElectionClient, candidate: &SocketAddrV4) -> Result<bool, Error> {
     let mut req = VoteRequest::new();
     req.set_term(1);
-    req.set_candidate("123.0.0.1:2345".to_string());
+    req.set_candidate(format!("{}:{}", candidate.ip(), candidate.port()));
     let reply = client.request_vote(&req)?;
     let yes = reply.get_yes();
     println!("Client received: {}", yes);
     Ok(yes)
 }
 
-fn do_business() -> Result<(), Error> {
-    let port = get_port()?;
-    // let _name = get_name();
-    // let client = get_client(port);
-    // send(client, name)?;
-    let client = get_raft_client(String::from("localhost"), port);
-    request_vote(client)?;
+fn do_business(server: &SocketAddrV4, candidate: &SocketAddrV4) -> Result<(), Error> {
+    let client = get_raft_client(server.ip().to_string(), server.port().to_string());
+    request_vote(client, candidate)?;
     Ok(())
 }
 
 fn main() -> () {
-    if let Err(err) = do_business() {
+    let app = get_cli_app();
+    let matches = app.get_matches();
+    let server = value_t!(matches, "server", SocketAddrV4).unwrap();
+    let candidate = value_t!(matches, "candidate", SocketAddrV4).unwrap();
+    if let Err(err) = do_business(&server, &candidate) {
         bail_out(err);
     }
-    // let task = Interval::new(Instant::now(), Duration::from_millis(100))
-    //     .take(10)
-    //     .for_each(|instant| {
-    //         println!("fire; instant={:?}", instant);
-    //         Ok(())
-    //     }).map_err(|e| panic!("interval errored; err={:?}", e));
-    // tokio::run(task);
-    // loop {
-    //     sleep(Duration::new(2, 0));
-    //     let x = do_business();
-    //     if let Err(err) = x {
-    //         bail_out(err);
-    //     }
-    // }
 }

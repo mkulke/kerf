@@ -7,6 +7,8 @@ extern crate protos;
 extern crate rand;
 extern crate tokio;
 
+mod util;
+
 use std::net::SocketAddrV4;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,12 +19,9 @@ use tokio::timer::Delay;
 
 use failure::Error;
 
-use std::io::Read;
-use std::{io, thread};
-
 use futures::future::lazy;
+use futures::sync::mpsc;
 use futures::sync::mpsc::UnboundedSender;
-use futures::sync::{mpsc, oneshot};
 use futures::Future;
 
 use grpcio::{ChannelBuilder, EnvBuilder};
@@ -61,13 +60,6 @@ enum Message {
     VotedFor(SocketAddrV4),
 }
 
-fn is_host_port(val: String) -> Result<(), String> {
-    match val.parse::<SocketAddrV4>() {
-        Ok(_) => Ok(()),
-        _ => Err(String::from("wrong format")),
-    }
-}
-
 fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
     App::new("kerfuffle")
         .version(crate_version!())
@@ -78,7 +70,7 @@ fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
                 .short("l")
                 .required(true)
                 .takes_value(true)
-                .validator(is_host_port),
+                .validator(util::is_host_port),
         )
         .arg(
             Arg::with_name("cluster")
@@ -87,7 +79,7 @@ fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
                 .required(true)
                 .multiple(true)
                 .takes_value(true)
-                .validator(is_host_port),
+                .validator(util::is_host_port),
         )
 }
 
@@ -200,15 +192,15 @@ fn request_vote(addr: &SocketAddrV4) -> impl Future<Item = bool, Error = ()> {
 }
 
 fn get_random_duration() -> Duration {
-    let between = Range::new(1, 5);
+    let between = Range::new(10, 15);
     let mut rng = rand::thread_rng();
     let sample = between.ind_sample(&mut rng);
     Duration::new(sample, 0)
 }
 
-fn do_business(cluster: Vec<SocketAddrV4>) -> Result<(), Error> {
+fn do_business(config: Config) -> () {
     tokio::run(lazy(move || {
-        cluster.iter().for_each(|addr| {
+        config.cluster.iter().for_each(|addr| {
             let now = Instant::now();
             let duration = get_random_duration();
             let delay = Delay::new(now + duration).map_err(|_| ());
@@ -217,7 +209,6 @@ fn do_business(cluster: Vec<SocketAddrV4>) -> Result<(), Error> {
         });
         Ok(())
     }));
-    Ok(())
 }
 
 fn main() -> () {
@@ -226,25 +217,12 @@ fn main() -> () {
     let listen = value_t!(matches, "listen", SocketAddrV4).unwrap();
     let cluster = values_t!(matches, "cluster", SocketAddrV4).unwrap();
     let config = Config { listen, cluster };
-    // if let Err(ref err) = start_server(config.clone()) {
-    //     bail_out(err);
-    // }
-    // if let Err(ref err) = do_business(config.clone().cluster) {
-    //     bail_out(err);
-    // }
     match start_server(config.clone()) {
         Err(ref err) => {
             bail_out(err);
         }
-        Ok(mut server) => {
-            let (tx, rx) = oneshot::channel();
-            thread::spawn(move || {
-                println!("Press ENTER to exit...");
-                let _ = io::stdin().read(&mut [0]).unwrap();
-                tx.send(())
-            });
-            let _ = rx.wait();
-            let _ = server.shutdown().wait();
+        Ok(_) => {
+            let _ = do_business(config);
         }
     }
 }
