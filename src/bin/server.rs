@@ -21,8 +21,8 @@ use failure::Error;
 
 use futures::future::lazy;
 use futures::sync::mpsc;
-use futures::sync::mpsc::UnboundedSender;
-use futures::Future;
+use futures::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use futures::{Future, Stream};
 
 use grpcio::{ChannelBuilder, EnvBuilder};
 use grpcio::{Environment, RpcContext, RpcStatus, RpcStatusCode, Server, ServerBuilder, UnarySink};
@@ -46,14 +46,6 @@ struct Config {
 enum VotedFor {
     Candidate(SocketAddrV4),
     NoOne,
-}
-
-#[derive(Clone)]
-struct LeaderElectionService {
-    config: Config,
-    current_term: u64,
-    voted_for: VotedFor,
-    tx: UnboundedSender<Message>,
 }
 
 enum Message {
@@ -83,7 +75,24 @@ fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
         )
 }
 
+#[derive(Clone)]
+struct LeaderElectionService {
+    config: Config,
+    current_term: u64,
+    voted_for: VotedFor,
+    tx: UnboundedSender<Message>,
+}
+
 impl LeaderElectionService {
+    fn new(tx: UnboundedSender<Message>, config: Config) -> LeaderElectionService {
+        LeaderElectionService {
+            tx: tx,
+            config: config,
+            current_term: 0,
+            voted_for: VotedFor::NoOne,
+        }
+    }
+
     fn to_member(&self, candidate: String) -> Option<&SocketAddrV4> {
         self.config
             .cluster
@@ -134,17 +143,11 @@ impl LeaderElection for LeaderElectionService {
     }
 }
 
-fn start_server(config: Config) -> Result<Server, Error> {
+fn start_server(config: Config, tx: UnboundedSender<Message>) -> Result<Server, Error> {
     let env = Arc::new(Environment::new(1));
-    let (tx, _rx) = mpsc::unbounded();
     let ip = config.listen.ip().to_string();
     let port = config.listen.port();
-    let service = LeaderElectionService {
-        tx: tx,
-        config: config,
-        current_term: 0,
-        voted_for: VotedFor::NoOne,
-    };
+    let service = LeaderElectionService::new(tx, config);
     let grpc_service = raft_grpc::create_leader_election(service);
     let mut server = ServerBuilder::new(env)
         .register_service(grpc_service)
@@ -198,7 +201,7 @@ fn get_random_duration() -> Duration {
     Duration::new(sample, 0)
 }
 
-fn do_business(config: Config) -> () {
+fn do_business(config: Config, rx: UnboundedReceiver<Message>) -> () {
     tokio::run(lazy(move || {
         config.cluster.iter().for_each(|addr| {
             let now = Instant::now();
@@ -207,7 +210,14 @@ fn do_business(config: Config) -> () {
             let vote = request_vote(addr);
             tokio::spawn(delay.and_then(|_| vote).map(|_| ()));
         });
-        Ok(())
+        rx.for_each(|message| {
+            match message {
+                Message::VotedFor(candidate) => {
+                    println!("voted for {}", candidate);
+                }
+            }
+            Ok(())
+        })
     }));
 }
 
@@ -217,12 +227,13 @@ fn main() -> () {
     let listen = value_t!(matches, "listen", SocketAddrV4).unwrap();
     let cluster = values_t!(matches, "cluster", SocketAddrV4).unwrap();
     let config = Config { listen, cluster };
-    match start_server(config.clone()) {
+    let (tx, rx) = mpsc::unbounded();
+    match start_server(config.clone(), tx) {
         Err(ref err) => {
             bail_out(err);
         }
         Ok(_) => {
-            let _ = do_business(config);
+            let _ = do_business(config, rx);
         }
     }
 }

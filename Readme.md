@@ -12,13 +12,12 @@ cargo build
 ## run
 
 ```
-./target/debug/server
-listening on 127.0.0.1:55976
-Press ENTER to exit...
+./target/debug/server -l 127.0.0.1:1234 -c 127.0.0.1:2345 127.0.0.1:3456
+listening on 127.0.0.1:1234
 ```
 
 ```
-./target/debug/client 55976 Alice
-Client received: Hello Alice!
+./target/debug/client -s 127.0.0.1:1234 -c 127.0.0.1:3456
+Client received: true
 ```
 
