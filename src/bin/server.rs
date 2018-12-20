@@ -107,6 +107,8 @@ impl LeaderElectionService {
     ) -> Box<Future<Item = (), Error = grpcio::Error> + Send> {
         let mut rep = VoteReply::new();
         let tx = self.tx.clone();
+        let mgns = VotedFor::Candidate(*member);
+        // self.voted_for
         rep.set_yes(true);
         let message = Message::VotedFor(*member);
         Box::new(sink.success(rep.clone()).inspect(move |_| {
@@ -123,7 +125,8 @@ impl LeaderElection for LeaderElectionService {
         sink: UnarySink<VoteReply>,
     ) -> () {
         let mut rep = VoteReply::new();
-        let fut = match &self.voted_for {
+        let voted_for = &self.voted_for;
+        let fut = match voted_for {
             VotedFor::Candidate(_) => {
                 rep.set_yes(false);
                 Box::new(sink.success(rep.clone()))
@@ -131,11 +134,23 @@ impl LeaderElection for LeaderElectionService {
             VotedFor::NoOne => {
                 let member = self.to_member(req.candidate);
                 match member {
-                    None => Box::new(sink.fail(RpcStatus::new(
-                        RpcStatusCode::InvalidArgument,
-                        Some("candidate not in member list".to_string()),
-                    ))),
-                    Some(m) => self.vote_yes(m, sink),
+                    None => sink
+                        .fail(RpcStatus::new(
+                            RpcStatusCode::InvalidArgument,
+                            Some("candidate not in member list".to_string()),
+                        ))
+                        .boxed(),
+                    // Some(m) => self.vote_yes(m, sink),
+                    Some(m) => {
+                        // let mgns = VotedFor::Candidate(*m);
+                        // self.voted_for = m;
+                        sink.success(rep.clone())
+                            .inspect(move |_| {
+                                let message = Message::VotedFor(*m);
+                                let _ = self.tx.unbounded_send(message);
+                            })
+                            .boxed()
+                    }
                 }
             }
         };
