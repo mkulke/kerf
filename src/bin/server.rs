@@ -18,7 +18,8 @@ pub mod raft {
 
 use std::net::SocketAddrV4;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::ops::DerefMut;
 use std::time::{Duration, Instant};
 
 use rand::distributions::{IndependentSample, Range};
@@ -53,7 +54,7 @@ struct Config {
     cluster: Vec<SocketAddrV4>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum VotedFor {
     Candidate(SocketAddrV4),
     NoOne,
@@ -82,18 +83,63 @@ fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
         )
 }
 
-#[derive(Clone, Debug)]
-struct Elect;
+#[derive(Debug)]
+struct State {
+    current_term: u64,
+    voted_for: Mutex<VotedFor>,
+}
 
-impl raft::server::LeaderElection for Elect {
+#[derive(Clone)]
+struct Voter {
+    config: Config,
+    state: Arc<State>,
+}
+
+impl Voter {
+    pub fn new(config: Config) -> Voter {
+        let state = Arc::new(State {
+            current_term: 0,
+            voted_for: Mutex::new(VotedFor::NoOne),
+        });
+
+        Voter {
+            config, 
+            state,
+        }
+    }
+
+    fn to_member(&self, candidate: String) -> Option<&SocketAddrV4> {
+        self.config
+            .cluster
+            .iter()
+            .find(|member| format!("{}:{}", member.ip(), member.port()) == candidate)
+    }
+}
+
+impl raft::server::LeaderElection for Voter {
     type RequestVoteFuture = future::FutureResult<Response<raft::VoteReply>, tower_grpc::Error>;
 
     fn request_vote(&mut self, request: Request<raft::VoteRequest>) -> Self::RequestVoteFuture {
         println!("REQUEST = {:?}", request);
 
-        let response = Response::new(raft::VoteReply {
-            yes: true,
-        });
+        let message = request.get_ref();
+        let candidate = &message.candidate;
+        let mut voted_for = self.state.voted_for.lock().unwrap();
+        let yes = match self.to_member(candidate.clone()) {
+            None => false,
+            Some(&member) => {
+                match voted_for.deref_mut() {
+                    VotedFor::NoOne => {
+                        println!("set voted_for to {}", member);
+                        *voted_for = VotedFor::Candidate(member);
+                        true
+                    },
+                    VotedFor::Candidate(_) => false,
+                }
+            }
+        };
+
+        let response = Response::new(raft::VoteReply { yes });
 
         future::ok(response)
     }
@@ -187,12 +233,13 @@ fn get_random_duration() -> Duration {
 }
 
 fn do_business(config: Config) -> () {
-    let new_service = raft::server::LeaderElectionServer::new(Elect);
+    let addr = SocketAddr::from(config.listen);
+    let voter = Voter::new(config);
 
+    let new_service = raft::server::LeaderElectionServer::new(voter);
     let h2_settings = Default::default();
     let mut h2 = Server::new(new_service, h2_settings, DefaultExecutor::current());
 
-    let addr = SocketAddr::from(config.listen);
     let bind = TcpListener::bind(&addr).expect("bind");
 
     let serve = bind.incoming()
