@@ -1,5 +1,0 @@
-enum {
-    Leader,
-    Follower,
-    Candidate,
-}
