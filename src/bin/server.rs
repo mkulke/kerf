@@ -1,64 +1,16 @@
 #[macro_use]
 extern crate clap;
 extern crate failure;
-extern crate bytes;
-extern crate futures;
-extern crate prost;
-#[macro_use]
-extern crate prost_derive;
-extern crate tokio;
-extern crate tower_h2;
-extern crate tower_grpc;
 
 mod util;
 
-pub mod raft {
-    include!(concat!(env!("OUT_DIR"), "/raft.rs"));
-}
-
 use std::net::SocketAddrV4;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::ops::DerefMut;
-use std::time::{Duration, Instant};
-
+use std::time::Duration;
 use rand::distributions::{IndependentSample, Range};
-
-// use tokio::timer::Delay;
-use tokio::timer::Interval;
-use tokio::executor::DefaultExecutor;
-use tokio::net::TcpListener;
-
 use failure::Error;
-
-use futures::future::lazy;
-use futures::future;
-// use futures::sync::mpsc;
-// use futures::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use futures::{Future, Stream};
-// use futures::Future;
-
-// use grpcio::{ChannelBuilder, EnvBuilder};
-// use grpcio::{Environment, RpcContext, RpcStatus, RpcStatusCode, Server, ServerBuilder, UnarySink};
-
-use tower_grpc::{Request, Response};
-use tower_h2::Server;
-
 use std::process;
-
 use clap::{App, Arg};
-
-#[derive(Clone)]
-struct Config {
-    listen: SocketAddrV4,
-    cluster: Vec<SocketAddrV4>,
-}
-
-#[derive(Clone, Debug)]
-enum VotedFor {
-    Candidate(SocketAddrV4),
-    NoOne,
-}
+use kerfuffle::{Config, start_server};
 
 fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
     App::new("kerfuffle")
@@ -81,68 +33,6 @@ fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
                 .takes_value(true)
                 .validator(util::is_host_port),
         )
-}
-
-#[derive(Debug)]
-struct State {
-    current_term: u64,
-    voted_for: Mutex<VotedFor>,
-}
-
-#[derive(Clone)]
-struct Voter {
-    config: Config,
-    state: Arc<State>,
-}
-
-impl Voter {
-    pub fn new(config: Config) -> Voter {
-        let state = Arc::new(State {
-            current_term: 0,
-            voted_for: Mutex::new(VotedFor::NoOne),
-        });
-
-        Voter {
-            config, 
-            state,
-        }
-    }
-
-    fn to_member(&self, candidate: String) -> Option<&SocketAddrV4> {
-        self.config
-            .cluster
-            .iter()
-            .find(|member| format!("{}:{}", member.ip(), member.port()) == candidate)
-    }
-}
-
-impl raft::server::LeaderElection for Voter {
-    type RequestVoteFuture = future::FutureResult<Response<raft::VoteReply>, tower_grpc::Error>;
-
-    fn request_vote(&mut self, request: Request<raft::VoteRequest>) -> Self::RequestVoteFuture {
-        println!("REQUEST = {:?}", request);
-
-        let message = request.get_ref();
-        let candidate = &message.candidate;
-        let mut voted_for = self.state.voted_for.lock().unwrap();
-        let yes = match self.to_member(candidate.clone()) {
-            None => false,
-            Some(&member) => {
-                match voted_for.deref_mut() {
-                    VotedFor::NoOne => {
-                        println!("set voted_for to {}", member);
-                        *voted_for = VotedFor::Candidate(member);
-                        true
-                    },
-                    VotedFor::Candidate(_) => false,
-                }
-            }
-        };
-
-        let response = Response::new(raft::VoteReply { yes });
-
-        future::ok(response)
-    }
 }
 
 // #[derive(Clone)]
@@ -232,32 +122,6 @@ fn get_random_duration() -> Duration {
     Duration::new(sample, 0)
 }
 
-fn do_business(config: Config) -> () {
-    let addr = SocketAddr::from(config.listen);
-    let voter = Voter::new(config);
-
-    let new_service = raft::server::LeaderElectionServer::new(voter);
-    let h2_settings = Default::default();
-    let mut h2 = Server::new(new_service, h2_settings, DefaultExecutor::current());
-
-    let bind = TcpListener::bind(&addr).expect("bind");
-
-    let serve = bind.incoming()
-        .for_each(move |sock| {
-            if let Err(e) = sock.set_nodelay(true) {
-                return Err(e);
-            }
-
-            let serve = h2.serve(sock);
-            tokio::spawn(serve.map_err(|e| eprintln!("h2 error: {:?}", e)));
-
-            Ok(())
-        })
-        .map_err(|e| eprintln!("accept error: {}", e));
-
-    tokio::run(serve)
-}
-
 fn main() -> () {
     let app = get_cli_app();
     let matches = app.get_matches();
@@ -265,7 +129,8 @@ fn main() -> () {
     let cluster = values_t!(matches, "cluster", SocketAddrV4).unwrap();
     let config = Config { listen, cluster };
     // let (tx, rx) = mpsc::unbounded();
-    do_business(config);
+    // do_business(config);
+    start_server(config);
     // match start_server(config.clone()) {
     //     Err(ref err) => {
     //         bail_out(err);

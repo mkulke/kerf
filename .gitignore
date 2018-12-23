@@ -1,5 +1,3 @@
 /target
 **/*.rs.bk
 **/*.swp
-/src/protos/*.rs
-!/src/protos/mod.rs

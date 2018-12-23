@@ -1,16 +1,10 @@
 #[macro_use]
 extern crate clap;
-extern crate tokio;
-extern crate tokio_connect;
-extern crate prost;
-#[macro_use]
-extern crate prost_derive;
-extern crate tower_h2;
-extern crate tower_grpc;
-extern crate tower_util;
-extern crate tower_http;
+extern crate failure;
 
 mod util;
+
+extern crate kerfuffle;
 
 use failure::Error;
 use std::process;
@@ -29,24 +23,7 @@ use tower_h2::client;
 use tower_util::MakeService;
 use tower_grpc::Request;
 
-pub mod raft {
-    include!(concat!(env!("OUT_DIR"), "/raft.rs"));
-}
-
-struct Dst {
-    addr: SocketAddrV4,
-}
-
-impl tokio_connect::Connect for Dst {
-    type Connected = TcpStream;
-    type Error = ::std::io::Error;
-    type Future = ConnectFuture;
-
-    fn connect(&self) -> Self::Future {
-        let addr = SocketAddr::from(self.addr);
-        TcpStream::connect(&addr)
-    }
-}
+use kerfuffle::request_vote;
 
 use clap::{App, Arg};
 
@@ -77,43 +54,13 @@ fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
         )
 }
 
-fn do_business(server: SocketAddrV4, candidate: SocketAddrV4) -> () {
-    let h2_settings = Default::default();
-    let dst = Dst { addr: server };
-    let mut make_client = client::Connect::new(dst, h2_settings, DefaultExecutor::current());
-    let fut = make_client.make_service(())
-        .map(move |conn| {
-            let uri: http::Uri = format!("http://{}:{}", server.ip(), server.port()).parse().unwrap();
-
-            let conn = tower_http::add_origin::Builder::new()
-                .uri(uri)
-                .build(conn)
-                .unwrap();
-
-            raft::client::LeaderElection::new(conn)
-        })
-        .and_then(move |mut client| {
-            client.request_vote(Request::new(raft::VoteRequest {
-                term: 1,
-                candidate: candidate.to_string(),
-            })).map_err(|e| panic!("gRPC request failed; err={:?}", e))
-        })
-        .and_then(|response| {
-            println!("RESPONSE = {:?}", response);
-            Ok(())
-        })
-        .map_err(|e| {
-            println!("ERR = {:?}", e);
-        });
-    tokio::run(fut);
-}
-
 fn main() -> () {
     let app = get_cli_app();
     let matches = app.get_matches();
     let server = value_t!(matches, "server", SocketAddrV4).unwrap();
     let candidate = value_t!(matches, "candidate", SocketAddrV4).unwrap();
-    do_business(server, candidate);
+    // do_business(server, candidate);
+    request_vote(server, candidate);
     // if let Err(err) = do_business(&server, &candidate) {
     //     bail_out(err);
     // }
