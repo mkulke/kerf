@@ -1,11 +1,9 @@
-extern crate protoc_grpcio;
+extern crate tower_grpc_build;
 
 fn main() {
-    let proto_root = "src/protos";
-    println!("cargo:rerun-if-changed={}", proto_root);
-    protoc_grpcio::compile_grpc_protos(
-        &["hello.proto"],
-        &[proto_root],
-        &proto_root,
-    ).expect("Failed to compile gRPC definitions!");
+    tower_grpc_build::Config::new()
+        .enable_server(true)
+        .enable_client(true)
+        .build(&["proto/raft/raft.proto"], &["proto/raft"])
+        .unwrap_or_else(|e| panic!("protobuf compilation failed: {}", e));
 }

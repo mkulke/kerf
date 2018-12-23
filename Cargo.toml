@@ -2,16 +2,23 @@
 name = "kerfuffle"
 version = "0.1.0"
 authors = ["Magnus Kulke <mkulke@gmail.com>"]
-
-[lib]
-name = "protos"
-path = "src/protos/mod.rs"
+edition = "2018"
 
 [dependencies]
+bytes = "0.4"
 failure = "0.1.3"
 futures = "0.1.25"
-grpcio = { version = "0.4", default-features = false, features = ["protobuf-codec"] }
-protobuf = "2.0.5"
+http = "0.1"
+clap = "2"
+rand = "0.3"
+prost = "0.4"
+prost-derive = "0.4"
+tokio = "0.1.13"
+tokio-connect = { git = "https://github.com/carllerche/tokio-connect" }
+tower-grpc = { git = "https://github.com/tower-rs/tower-grpc.git" }
+tower-h2 = { git = "https://github.com/tower-rs/tower-h2" }
+tower-util = { git = "https://github.com/tower-rs/tower" }
+tower-http = { git = "https://github.com/tower-rs/tower-http" }
 
 [build-dependencies]
-protoc-grpcio = "0.3.1"
+tower-grpc-build = { git = "https://github.com/tower-rs/tower-grpc.git" }

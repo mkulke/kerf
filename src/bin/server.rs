@@ -1,72 +1,277 @@
+#[macro_use]
+extern crate clap;
 extern crate failure;
+extern crate bytes;
 extern crate futures;
-extern crate grpcio;
-extern crate protos;
+extern crate prost;
+#[macro_use]
+extern crate prost_derive;
+extern crate tokio;
+extern crate tower_h2;
+extern crate tower_grpc;
 
-use std::io::Read;
-use std::sync::Arc;
-use std::{io, thread};
+mod util;
+
+pub mod raft {
+    include!(concat!(env!("OUT_DIR"), "/raft.rs"));
+}
+
+use std::net::SocketAddrV4;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::ops::DerefMut;
+use std::time::{Duration, Instant};
+
+use rand::distributions::{IndependentSample, Range};
+
+// use tokio::timer::Delay;
+use tokio::timer::Interval;
+use tokio::executor::DefaultExecutor;
+use tokio::net::TcpListener;
 
 use failure::Error;
-use futures::sync::oneshot;
-use futures::Future;
-use grpcio::{Environment, RpcContext, Server, ServerBuilder, UnarySink};
+
+use futures::future::lazy;
+use futures::future;
+// use futures::sync::mpsc;
+// use futures::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use futures::{Future, Stream};
+// use futures::Future;
+
+// use grpcio::{ChannelBuilder, EnvBuilder};
+// use grpcio::{Environment, RpcContext, RpcStatus, RpcStatusCode, Server, ServerBuilder, UnarySink};
+
+use tower_grpc::{Request, Response};
+use tower_h2::Server;
+
 use std::process;
 
-use protos::hello::{HelloReply, HelloRequest};
-use protos::hello_grpc::{self, Greeter};
+use clap::{App, Arg};
 
 #[derive(Clone)]
-struct GreeterService;
+struct Config {
+    listen: SocketAddrV4,
+    cluster: Vec<SocketAddrV4>,
+}
 
-impl Greeter for GreeterService {
-    fn say_hello(&mut self, ctx: RpcContext, req: HelloRequest, sink: UnarySink<HelloReply>) -> () {
-        println!("Received HelloRequest {{ {:?} }}", req);
-        let mut reply = HelloReply::new();
-        reply.set_message(format!("Hello {}!", req.get_name()));
-        let f = sink
-            .success(reply.clone())
-            .map(move |_| println!("Responded with HelloReply {{ {:?} }}", reply))
-            .map_err(move |err| eprintln!("Failed to reply: {:?}", err));
-        ctx.spawn(f)
+#[derive(Clone, Debug)]
+enum VotedFor {
+    Candidate(SocketAddrV4),
+    NoOne,
+}
+
+fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
+    App::new("kerfuffle")
+        .version(crate_version!())
+        .author(crate_authors!())
+        .arg(
+            Arg::with_name("listen")
+                .long("listen")
+                .short("l")
+                .required(true)
+                .takes_value(true)
+                .validator(util::is_host_port),
+        )
+        .arg(
+            Arg::with_name("cluster")
+                .long("cluster")
+                .short("c")
+                .required(true)
+                .multiple(true)
+                .takes_value(true)
+                .validator(util::is_host_port),
+        )
+}
+
+#[derive(Debug)]
+struct State {
+    current_term: u64,
+    voted_for: Mutex<VotedFor>,
+}
+
+#[derive(Clone)]
+struct Voter {
+    config: Config,
+    state: Arc<State>,
+}
+
+impl Voter {
+    pub fn new(config: Config) -> Voter {
+        let state = Arc::new(State {
+            current_term: 0,
+            voted_for: Mutex::new(VotedFor::NoOne),
+        });
+
+        Voter {
+            config, 
+            state,
+        }
+    }
+
+    fn to_member(&self, candidate: String) -> Option<&SocketAddrV4> {
+        self.config
+            .cluster
+            .iter()
+            .find(|member| format!("{}:{}", member.ip(), member.port()) == candidate)
     }
 }
 
-fn start_server() -> Result<Server, Error> {
-    let env = Arc::new(Environment::new(1));
-    let service = hello_grpc::create_greeter(GreeterService);
-    let mut server = ServerBuilder::new(env)
-        .register_service(service)
-        .bind("127.0.0.1", 0)
-        .build()?;
-    server.start();
-    for &(ref host, port) in server.bind_addrs() {
-        println!("listening on {}:{}", host, port);
+impl raft::server::LeaderElection for Voter {
+    type RequestVoteFuture = future::FutureResult<Response<raft::VoteReply>, tower_grpc::Error>;
+
+    fn request_vote(&mut self, request: Request<raft::VoteRequest>) -> Self::RequestVoteFuture {
+        println!("REQUEST = {:?}", request);
+
+        let message = request.get_ref();
+        let candidate = &message.candidate;
+        let mut voted_for = self.state.voted_for.lock().unwrap();
+        let yes = match self.to_member(candidate.clone()) {
+            None => false,
+            Some(&member) => {
+                match voted_for.deref_mut() {
+                    VotedFor::NoOne => {
+                        println!("set voted_for to {}", member);
+                        *voted_for = VotedFor::Candidate(member);
+                        true
+                    },
+                    VotedFor::Candidate(_) => false,
+                }
+            }
+        };
+
+        let response = Response::new(raft::VoteReply { yes });
+
+        future::ok(response)
     }
-    Ok(server)
 }
 
-fn bail_out(err: Error) -> () {
+// #[derive(Clone)]
+// struct LeaderElectionService {
+//     config: Config,
+//     current_term: u64,
+//     voted_for: VotedFor,
+// }
+
+// impl LeaderElectionService {
+//     fn new(config: Config) -> LeaderElectionService {
+//         LeaderElectionService {
+//             config: config,
+//             current_term: 0,
+//             voted_for: VotedFor::NoOne,
+//         }
+//     }
+
+//     fn to_member(&self, candidate: String) -> Option<&SocketAddrV4> {
+//         self.config
+//             .cluster
+//             .iter()
+//             .find(|member| format!("{}:{}", member.ip(), member.port()) == candidate)
+//     }
+// }
+
+// impl LeaderElection for LeaderElectionService {
+//     fn request_vote(
+//         &mut self,
+//         ctx: RpcContext,
+//         req: VoteRequest,
+//         sink: UnarySink<VoteReply>,
+//     ) -> () {
+//         let fut = match self.to_member(req.candidate) {
+//             None => Box::new(sink.fail(RpcStatus::new(
+//                 RpcStatusCode::InvalidArgument,
+//                 Some("candidate not in member list".to_string()),
+//             ))),
+//             Some(&member) => {
+//                 let mut rep = VoteReply::new();
+//                 let voted_for = &self.voted_for;
+//                 match voted_for {
+//                     VotedFor::Candidate(_) => {
+//                         rep.set_yes(false);
+//                         println!("rejected vote for {}", member);
+//                         Box::new(sink.success(rep.clone()))
+//                     }
+//                     VotedFor::NoOne => {
+//                         rep.set_yes(true);
+//                         self.voted_for = VotedFor::Candidate(member);
+//                         println!("voted for {}", member);
+//                         Box::new(sink.success(rep.clone()))
+//                     }
+//                 }
+//             }
+//         };
+//         ctx.spawn(fut.map_err(|err| eprintln!("Failed to reply: {:?}", err)))
+//     }
+// }
+
+// fn start_server(config: Config) -> Result<Server, Error> {
+//     let env = Arc::new(Environment::new(1));
+//     let ip = config.listen.ip().to_string();
+//     let port = config.listen.port();
+//     let service = LeaderElectionService::new(config);
+//     let grpc_service = raft_grpc::create_leader_election(service);
+//     let mut server = ServerBuilder::new(env)
+//         .register_service(grpc_service)
+//         .bind(ip, port)
+//         .build()?;
+//     server.start();
+//     for &(ref host, port) in server.bind_addrs() {
+//         println!("listening on {}:{}", host, port);
+//     }
+//     Ok(server)
+// }
+
+fn bail_out(err: &Error) -> () {
     eprintln!("{}", err);
     process::exit(1);
 }
 
-fn do_business() -> Result<(), Error> {
-    let mut server = start_server()?;
-    let (tx, rx) = oneshot::channel();
-    thread::spawn(move || {
-        println!("Press ENTER to exit...");
-        let _ = io::stdin().read(&mut [0]).unwrap();
-        tx.send(())
-    });
-    let _ = rx.wait();
-    let _ = server.shutdown().wait();
-    Ok(())
+fn get_random_duration() -> Duration {
+    let between = Range::new(10, 15);
+    let mut rng = rand::thread_rng();
+    let sample = between.ind_sample(&mut rng);
+    Duration::new(sample, 0)
+}
+
+fn do_business(config: Config) -> () {
+    let addr = SocketAddr::from(config.listen);
+    let voter = Voter::new(config);
+
+    let new_service = raft::server::LeaderElectionServer::new(voter);
+    let h2_settings = Default::default();
+    let mut h2 = Server::new(new_service, h2_settings, DefaultExecutor::current());
+
+    let bind = TcpListener::bind(&addr).expect("bind");
+
+    let serve = bind.incoming()
+        .for_each(move |sock| {
+            if let Err(e) = sock.set_nodelay(true) {
+                return Err(e);
+            }
+
+            let serve = h2.serve(sock);
+            tokio::spawn(serve.map_err(|e| eprintln!("h2 error: {:?}", e)));
+
+            Ok(())
+        })
+        .map_err(|e| eprintln!("accept error: {}", e));
+
+    tokio::run(serve)
 }
 
 fn main() -> () {
-    let x = do_business();
-    if let Err(err) = x {
-        bail_out(err);
-    }
+    let app = get_cli_app();
+    let matches = app.get_matches();
+    let listen = value_t!(matches, "listen", SocketAddrV4).unwrap();
+    let cluster = values_t!(matches, "cluster", SocketAddrV4).unwrap();
+    let config = Config { listen, cluster };
+    // let (tx, rx) = mpsc::unbounded();
+    do_business(config);
+    // match start_server(config.clone()) {
+    //     Err(ref err) => {
+    //         bail_out(err);
+    //     }
+    //     Ok(_) => {
+    //         let _ = do_business(config);
+    //     }
+    // }
 }

@@ -1,83 +1,120 @@
-extern crate grpcio;
-extern crate protos;
 #[macro_use]
-extern crate failure;
+extern crate clap;
+extern crate tokio;
+extern crate tokio_connect;
+extern crate prost;
+#[macro_use]
+extern crate prost_derive;
+extern crate tower_h2;
+extern crate tower_grpc;
+extern crate tower_util;
+extern crate tower_http;
+
+mod util;
 
 use failure::Error;
-use std::env;
 use std::process;
-use std::sync::Arc;
+// use std::thread::sleep;
+// use std::time::{Duration, Instant};
 
-use grpcio::{ChannelBuilder, EnvBuilder};
+use std::net::SocketAddr;
+use std::net::SocketAddrV4;
 
-use protos::hello::HelloRequest;
-use protos::hello_grpc::GreeterClient;
+use tokio::net::tcp::{ConnectFuture, TcpStream};
+use tokio::executor::DefaultExecutor;
 
-#[derive(Debug, Fail)]
-enum DomainError {
-    #[fail(display = "{} is not a valid port number", port)]
-    NoPortNumber { port: String },
-    #[fail(display = "expected 1 or 2 arguments")]
-    ArgumentError,
+use futures::Future;
+
+use tower_h2::client;
+use tower_util::MakeService;
+use tower_grpc::Request;
+
+pub mod raft {
+    include!(concat!(env!("OUT_DIR"), "/raft.rs"));
 }
+
+struct Dst {
+    addr: SocketAddrV4,
+}
+
+impl tokio_connect::Connect for Dst {
+    type Connected = TcpStream;
+    type Error = ::std::io::Error;
+    type Future = ConnectFuture;
+
+    fn connect(&self) -> Self::Future {
+        let addr = SocketAddr::from(self.addr);
+        TcpStream::connect(&addr)
+    }
+}
+
+use clap::{App, Arg};
 
 fn bail_out(err: Error) -> () {
     eprintln!("{}", err);
     process::exit(1);
 }
 
-fn assert_args() -> Result<(), DomainError> {
-    let args = env::args().collect::<Vec<_>>();
-    match args.len() {
-        1...3 => Ok(()),
-        _ => Err(DomainError::ArgumentError),
-    }
+fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
+    App::new("kerfuffle client")
+        .version(crate_version!())
+        .author(crate_authors!())
+        .arg(
+            Arg::with_name("server")
+                .long("server")
+                .short("s")
+                .required(true)
+                .takes_value(true)
+                .validator(util::is_host_port),
+        )
+        .arg(
+            Arg::with_name("candidate")
+                .long("candidate")
+                .short("c")
+                .required(true)
+                .takes_value(true)
+                .validator(util::is_host_port),
+        )
 }
 
-fn get_name() -> String {
-    let args = env::args().collect::<Vec<_>>();
-    match args.get(2) {
-        Some(name) => name.to_owned(),
-        _ => "John Doe".to_string(),
-    }
-}
+fn do_business(server: SocketAddrV4, candidate: SocketAddrV4) -> () {
+    let h2_settings = Default::default();
+    let dst = Dst { addr: server };
+    let mut make_client = client::Connect::new(dst, h2_settings, DefaultExecutor::current());
+    let fut = make_client.make_service(())
+        .map(move |conn| {
+            let uri: http::Uri = format!("http://{}:{}", server.ip(), server.port()).parse().unwrap();
 
-fn get_port() -> Result<String, DomainError> {
-    let args = env::args().collect::<Vec<_>>();
-    let first_arg = args.get(1).ok_or(DomainError::ArgumentError)?;
-    first_arg
-        .parse::<u16>()
-        .map_err(|_| DomainError::NoPortNumber {
-            port: first_arg.to_string(),
-        })?;
-    Ok(first_arg.to_string())
-}
+            let conn = tower_http::add_origin::Builder::new()
+                .uri(uri)
+                .build(conn)
+                .unwrap();
 
-fn get_client(port: String) -> GreeterClient {
-    let env = Arc::new(EnvBuilder::new().build());
-    let ch = ChannelBuilder::new(env).connect(format!("localhost:{}", port).as_str());
-    GreeterClient::new(ch)
-}
-
-fn send(client: GreeterClient, name: String) -> Result<(), Error> {
-    let mut req = HelloRequest::new();
-    req.set_name(name);
-    let reply = client.say_hello(&req)?;
-    println!("Client received: {}", reply.get_message());
-    Ok(())
-}
-
-fn do_business() -> Result<(), Error> {
-    assert_args()?;
-    let port = get_port()?;
-    let name = get_name();
-    let client = get_client(port);
-    send(client, name)
+            raft::client::LeaderElection::new(conn)
+        })
+        .and_then(move |mut client| {
+            client.request_vote(Request::new(raft::VoteRequest {
+                term: 1,
+                candidate: candidate.to_string(),
+            })).map_err(|e| panic!("gRPC request failed; err={:?}", e))
+        })
+        .and_then(|response| {
+            println!("RESPONSE = {:?}", response);
+            Ok(())
+        })
+        .map_err(|e| {
+            println!("ERR = {:?}", e);
+        });
+    tokio::run(fut);
 }
 
 fn main() -> () {
-    let x = do_business();
-    if let Err(err) = x {
-        bail_out(err);
-    }
+    let app = get_cli_app();
+    let matches = app.get_matches();
+    let server = value_t!(matches, "server", SocketAddrV4).unwrap();
+    let candidate = value_t!(matches, "candidate", SocketAddrV4).unwrap();
+    do_business(server, candidate);
+    // if let Err(err) = do_business(&server, &candidate) {
+    //     bail_out(err);
+    // }
 }
