@@ -5,7 +5,6 @@ extern crate failure;
 mod util;
 
 use std::net::SocketAddrV4;
-use std::time::Duration;
 use rand::distributions::{IndependentSample, Range};
 use failure::Error;
 use std::process;
@@ -115,12 +114,12 @@ fn bail_out(err: &Error) -> () {
     process::exit(1);
 }
 
-fn get_random_duration() -> Duration {
-    let between = Range::new(10, 15);
-    let mut rng = rand::thread_rng();
-    let sample = between.ind_sample(&mut rng);
-    Duration::new(sample, 0)
-}
+// fn get_random_duration() -> Duration {
+//     let between = Range::new(10, 15);
+//     let mut rng = rand::thread_rng();
+//     let sample = between.ind_sample(&mut rng);
+//     Duration::new(sample, 0)
+// }
 
 fn main() -> () {
     let app = get_cli_app();

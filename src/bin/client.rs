@@ -1,30 +1,14 @@
 #[macro_use]
 extern crate clap;
 extern crate failure;
+extern crate kerfuffle;
 
 mod util;
 
-extern crate kerfuffle;
-
 use failure::Error;
 use std::process;
-// use std::thread::sleep;
-// use std::time::{Duration, Instant};
-
-use std::net::SocketAddr;
 use std::net::SocketAddrV4;
-
-use tokio::net::tcp::{ConnectFuture, TcpStream};
-use tokio::executor::DefaultExecutor;
-
-use futures::Future;
-
-use tower_h2::client;
-use tower_util::MakeService;
-use tower_grpc::Request;
-
-use kerfuffle::request_vote;
-
+use kerfuffle::start_client;
 use clap::{App, Arg};
 
 fn bail_out(err: Error) -> () {
@@ -60,7 +44,7 @@ fn main() -> () {
     let server = value_t!(matches, "server", SocketAddrV4).unwrap();
     let candidate = value_t!(matches, "candidate", SocketAddrV4).unwrap();
     // do_business(server, candidate);
-    request_vote(server, candidate);
+    start_client(server, candidate);
     // if let Err(err) = do_business(&server, &candidate) {
     //     bail_out(err);
     // }
