@@ -173,9 +173,11 @@ pub fn start_server(config: Config) -> () {
                 let votes = cluster_stream.fold(1, move |acc, addr| {
                     request_vote(addr, candidate)
                         .map(move |yes| if yes { acc + 1 } else { acc })
+                        .or_else(move |_| Ok(acc))
                 });
                 votes
             })
+            .inspect(|votes| println!("votes: {}", votes))
             .for_each(|_| Ok(()));
         tokio::spawn(emissions);
         Ok(())

@@ -5,11 +5,11 @@ extern crate kerfuffle;
 
 mod util;
 
-use failure::Error;
-use std::process;
-use std::net::SocketAddrV4;
-use kerfuffle::start_client;
 use clap::{App, Arg};
+use failure::Error;
+use kerfuffle::start_client;
+use std::net::SocketAddrV4;
+use std::process;
 
 fn bail_out(err: Error) -> () {
     eprintln!("{}", err);

@@ -4,12 +4,11 @@ extern crate failure;
 
 mod util;
 
-use std::net::SocketAddrV4;
-use rand::distributions::{IndependentSample, Range};
-use failure::Error;
-use std::process;
 use clap::{App, Arg};
-use kerfuffle::{Config, start_server};
+use failure::Error;
+use kerfuffle::{start_server, Config};
+use std::net::SocketAddrV4;
+use std::process;
 
 fn get_cli_app<'a, 'b>() -> App<'a, 'b> {
     App::new("kerfuffle")
