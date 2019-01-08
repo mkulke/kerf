@@ -1,11 +1,10 @@
-#[macro_use]
 extern crate clap;
 extern crate failure;
 extern crate kerfuffle;
 
 mod util;
 
-use clap::{App, Arg};
+use clap::{App, Arg, crate_version, crate_authors, value_t};
 use failure::Error;
 use kerfuffle::start_client;
 use std::net::SocketAddrV4;
