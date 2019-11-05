@@ -16,7 +16,7 @@ pub mod raft {
     tonic::include_proto!("raft");
 }
 
-use raft::{server, Empty, VoteReply};
+use raft::{server, Empty, Term, VoteReply};
 
 #[derive(Debug)]
 pub struct Raft {
@@ -25,8 +25,8 @@ pub struct Raft {
 
 #[derive(Debug)]
 enum Message {
-    AppendEntries(oneshot::Sender<()>),
-    VoteRequest(oneshot::Sender<bool>),
+    AppendEntries((oneshot::Sender<()>, i32)),
+    VoteRequest((oneshot::Sender<bool>, i32)),
     TimerElapsed,
     Vote(bool),
 }
@@ -48,23 +48,29 @@ struct Votes {
 }
 
 #[derive(Debug)]
-enum State {
+enum Role {
     Follower { timeout: Timeout, voted_yet: bool },
     Candidate { votes: Votes },
     Leader,
 }
 
+#[derive(Debug)]
+struct State {
+    role: Role,
+    term: i32,
+}
+
 impl Raft {
-    async fn send_append_entries(mut tx: Sender<Message>) -> Result<()> {
+    async fn send_append_entries(mut tx: Sender<Message>, term: i32) -> Result<()> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        tx.send(Message::AppendEntries(resp_tx)).await?;
+        tx.send(Message::AppendEntries((resp_tx, term))).await?;
         resp_rx.await?;
         Ok(())
     }
 
-    async fn send_vote_request(mut tx: Sender<Message>) -> Result<bool> {
+    async fn send_vote_request(mut tx: Sender<Message>, term: i32) -> Result<bool> {
         let (resp_tx, resp_rx) = oneshot::channel::<bool>();
-        tx.send(Message::VoteRequest(resp_tx)).await?;
+        tx.send(Message::VoteRequest((resp_tx, term))).await?;
         let resp = resp_rx.await?;
         Ok(resp)
     }
@@ -72,15 +78,17 @@ impl Raft {
 
 #[tonic::async_trait]
 impl server::Raft for Raft {
-    async fn append_entries(&self, _request: Request<Empty>) -> Result<Response<Empty>, Status> {
-        Raft::send_append_entries(self.tx.clone())
+    async fn append_entries(&self, request: Request<Term>) -> Result<Response<Empty>, Status> {
+        let term = request.into_inner().term;
+        Raft::send_append_entries(self.tx.clone(), term)
             .await
             .map_err(|_| Status::new(Code::Internal, "channel error"))
             .map(|_| Response::new(Empty {}))
     }
 
-    async fn request_vote(&self, _request: Request<Empty>) -> Result<Response<VoteReply>, Status> {
-        Raft::send_vote_request(self.tx.clone())
+    async fn request_vote(&self, request: Request<Term>) -> Result<Response<VoteReply>, Status> {
+        let term = request.into_inner().term;
+        Raft::send_vote_request(self.tx.clone(), term)
             .await
             .map_err(|_| Status::new(Code::Internal, "channel error"))
             .map(|yes| Response::new(VoteReply { yes }))
@@ -99,7 +107,8 @@ fn spawn_timer(mut tx: Sender<Message>) -> Timeout {
     Timeout { abort_handle }
 }
 
-fn request_votes(tx: Sender<Message>) {
+// TODO: the individual operations can fail, is it a 'no' vote?
+fn request_votes(tx: Sender<Message>, _term: i32) {
     for n in 1..NUM_NODES {
         let mut vote_tx = tx.clone();
         let when = tokio::clock::now() + Duration::from_secs(1 + n as u64);
@@ -141,42 +150,45 @@ impl Machine {
     fn new(tx: Sender<Message>) -> Self {
         let timeout = spawn_timer(tx.clone());
         let voted_yet = false;
-        let state = State::Follower { timeout, voted_yet };
+        let role = Role::Follower { timeout, voted_yet };
+        let term = 0;
+        let state = State { role, term };
         Machine { state, tx }
     }
 
     fn as_follower(&mut self) {
         let timeout = spawn_timer(self.tx.clone());
         let voted_yet = false;
-        self.state = State::Follower { timeout, voted_yet }
+        self.state.role = Role::Follower { timeout, voted_yet };
+        self.state.term += 1;
     }
 
     fn as_candidate(&mut self) {
         let votes = Votes { yes: 1, no: 0 };
-        self.state = State::Candidate { votes };
-        request_votes(self.tx.clone());
+        self.state.role = Role::Candidate { votes };
+        request_votes(self.tx.clone(), self.state.term);
     }
 
     fn as_leader(&mut self) {
-        self.state = State::Leader;
+        self.state.role = Role::Leader;
     }
 
     fn transition(&mut self, message: Message) {
         use Message::*;
-        use State::*;
+        use Role::*;
 
-        match self.state {
+        match self.state.role {
             Follower {
                 ref mut timeout,
                 ref mut voted_yet,
             } => match message {
                 TimerElapsed => self.as_candidate(),
-                AppendEntries(resp_tx) => {
+                AppendEntries((resp_tx, _)) => {
                     timeout.abort_handle.abort();
                     *timeout = spawn_timer(self.tx.clone());
                     respond(resp_tx, ());
                 }
-                VoteRequest(resp_tx) => {
+                VoteRequest((resp_tx, _)) => {
                     let vote = !*voted_yet;
                     *voted_yet = true;
                     respond(resp_tx, vote);
@@ -184,8 +196,8 @@ impl Machine {
                 Vote(_) => {}
             },
             Candidate { ref mut votes, .. } => match message {
-                VoteRequest(resp_tx) => respond(resp_tx, false),
-                AppendEntries(resp_tx) => {
+                VoteRequest((resp_tx, _)) => respond(resp_tx, false),
+                AppendEntries((resp_tx, _)) => {
                     self.as_follower();
                     respond(resp_tx, ());
                 }

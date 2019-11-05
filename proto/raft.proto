@@ -3,11 +3,15 @@ syntax = "proto3";
 package raft;
 
 service Raft {
-  rpc AppendEntries(Empty) returns (Empty) {}
-  rpc RequestVote(Empty) returns (VoteReply) {}
+  rpc AppendEntries(Term) returns (Empty) {}
+  rpc RequestVote(Term) returns (VoteReply) {}
 }
 
 message Empty {}
+
+message Term {
+  int32 term = 1;
+}
 
 message VoteReply {
   bool yes = 1;
