@@ -2,6 +2,7 @@ use anyhow::Result;
 use futures::future::join;
 use futures_util::future::{abortable, AbortHandle};
 use std::time::Duration;
+use tokio::clock::now;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{mpsc, oneshot};
 use tokio::timer::delay;
@@ -87,7 +88,7 @@ impl server::Raft for Raft {
 }
 
 fn spawn_timer(mut tx: Sender<Message>) -> Timeout {
-    let when = tokio::clock::now() + Duration::from_secs(10);
+    let when = now() + Duration::from_secs(10);
     let delay = delay(when);
     let (abortable_delay, abort_handle) = abortable(delay);
     tokio::spawn(async move {
@@ -118,6 +119,22 @@ where
     T: std::fmt::Debug,
 {
     tx.send(response).expect("oneshot error");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn new_machine_times_out_after_10s() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let _ = Machine::new(tx);
+        let message = rx.recv().await.unwrap();
+        assert!(match message {
+            Message::TimerElapsed => true,
+            _ => false,
+        });
+    }
 }
 
 impl Machine {
