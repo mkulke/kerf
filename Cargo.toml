@@ -1,24 +1,28 @@
 [package]
-name = "kerfuffle"
+name = "kerf"
 version = "0.1.0"
-authors = ["Magnus Kulke <mkulke@gmail.com>"]
+authors = ["mkulke <mkulke@gmail.com>"]
 edition = "2018"
 
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
 [dependencies]
+tonic = "=0.1.0-alpha.4"
 bytes = "0.4"
-failure = "0.1.3"
-futures = "0.1.25"
-http = "0.1"
-clap = "2"
-rand = "0.3"
-prost = "0.4"
-prost-derive = "0.4"
-tokio = "0.1.13"
-tokio-connect = { git = "https://github.com/carllerche/tokio-connect" }
-tower-grpc = { git = "https://github.com/tower-rs/tower-grpc.git" }
-tower-h2 = { git = "https://github.com/tower-rs/tower-h2" }
-tower-util = { git = "https://github.com/tower-rs/tower" }
-tower-http = { git = "https://github.com/tower-rs/tower-http" }
+prost = "0.5"
+tokio = "=0.2.0-alpha.6"
+futures-preview = { version = "=0.3.0-alpha.19", default-features = false, features = ["alloc", "async-await"]}
+futures-util-preview = { version = "=0.3.0-alpha.19" }
+async-stream = "0.1.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
 
 [build-dependencies]
-tower-grpc-build = { git = "https://github.com/tower-rs/tower-grpc.git" }
+tonic-build = "=0.1.0-alpha.4"

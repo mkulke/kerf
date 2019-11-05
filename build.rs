@@ -1,9 +1,3 @@
-extern crate tower_grpc_build;
-
 fn main() {
-    tower_grpc_build::Config::new()
-        .enable_server(true)
-        .enable_client(true)
-        .build(&["proto/raft/raft.proto"], &["proto/raft"])
-        .unwrap_or_else(|e| panic!("protobuf compilation failed: {}", e));
+    tonic_build::compile_protos("proto/raft.proto").unwrap();
 }

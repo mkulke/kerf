@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package raft;
+
+service Raft {
+  rpc AppendEntries(Empty) returns (Empty) {}
+  rpc RequestVote(Empty) returns (VoteReply) {}
+}
+
+message Empty {}
+
+message VoteReply {
+  bool yes = 1;
+}
