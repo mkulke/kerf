@@ -3,6 +3,8 @@ rust:
   - beta
   - nightly
 cache: cargo
-dist: trusty
+dist: xenial
 os:
   - linux
+before_script:
+  - rustup component add rustfmt
