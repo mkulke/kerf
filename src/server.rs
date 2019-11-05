@@ -128,19 +128,19 @@ impl Machine {
         Machine { state, tx }
     }
 
-    fn to_follower(&mut self) {
+    fn as_follower(&mut self) {
         let timeout = spawn_timer(self.tx.clone());
         let voted_yet = false;
         self.state = State::Follower { timeout, voted_yet }
     }
 
-    fn to_candidate(&mut self) {
+    fn as_candidate(&mut self) {
         let votes = Votes { yes: 1, no: 0 };
         self.state = State::Candidate { votes };
         request_votes(self.tx.clone());
     }
 
-    fn to_leader(&mut self) {
+    fn as_leader(&mut self) {
         self.state = State::Leader;
     }
 
@@ -153,7 +153,7 @@ impl Machine {
                 ref mut timeout,
                 ref mut voted_yet,
             } => match message {
-                TimerElapsed => self.to_candidate(),
+                TimerElapsed => self.as_candidate(),
                 AppendEntries(resp_tx) => {
                     timeout.abort_handle.abort();
                     *timeout = spawn_timer(self.tx.clone());
@@ -169,7 +169,7 @@ impl Machine {
             Candidate { ref mut votes, .. } => match message {
                 VoteRequest(resp_tx) => respond(resp_tx, false),
                 AppendEntries(resp_tx) => {
-                    self.to_follower();
+                    self.as_follower();
                     respond(resp_tx, ());
                 }
                 Vote(yes) => {
@@ -181,9 +181,9 @@ impl Machine {
                     let all = votes.yes + votes.no;
                     if all >= QUORUM {
                         if votes.yes > votes.no {
-                            self.to_leader();
+                            self.as_leader();
                         } else {
-                            self.to_follower();
+                            self.as_follower();
                         }
                     }
                 }
