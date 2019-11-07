@@ -36,6 +36,12 @@ struct Timeout {
     abort_handle: AbortHandle,
 }
 
+impl Drop for Timeout {
+    fn drop(&mut self) {
+        self.abort_handle.abort();
+    }
+}
+
 struct Machine {
     tx: Sender<Message>,
     state: State,
@@ -177,6 +183,7 @@ impl Machine {
         use Message::*;
         use Role::*;
 
+        println!("message: {:?}", message);
         match self.state.role {
             Follower {
                 ref mut timeout,
@@ -184,7 +191,6 @@ impl Machine {
             } => match message {
                 TimerElapsed => self.as_candidate(),
                 AppendEntries((resp_tx, _)) => {
-                    timeout.abort_handle.abort();
                     *timeout = spawn_timer(self.tx.clone());
                     respond(resp_tx, ());
                 }
