@@ -13,7 +13,7 @@ name = "client"
 path = "src/client.rs"
 
 [dependencies]
-tonic = "=0.1.0-alpha.4"
+tonic = "=0.1.0-alpha.5"
 bytes = "0.4"
 prost = "0.5"
 tokio = "=0.2.0-alpha.6"
@@ -25,4 +25,4 @@ serde_json = "1.0"
 anyhow = "1.0"
 
 [build-dependencies]
-tonic-build = "=0.1.0-alpha.4"
+tonic-build = "=0.1.0-alpha.5"

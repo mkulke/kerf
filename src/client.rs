@@ -13,7 +13,7 @@ use raft::client::RaftClient;
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
-    let mut client = RaftClient::connect("http://[::1]:10000")?;
+    let mut client = RaftClient::connect("http://[::1]:10000").await?;
     let arg = &args[1];
     let term = Term { term: 0 };
     match arg.as_str() {

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use futures::future::join;
-use futures::Future;
 use futures_util::future::{abortable, AbortHandle};
 use std::time::Duration;
 use tokio::clock::now;
@@ -9,6 +8,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::timer::delay;
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
+
+pub mod bla;
 
 const NUM_NODES: u8 = 3;
 const QUORUM: u8 = (NUM_NODES / 2) + 1;
@@ -55,9 +56,20 @@ struct Votes {
 }
 
 #[derive(Debug)]
+struct Follower {
+    timeout: Timeout,
+    voted_yet: bool,
+}
+
+#[derive(Debug)]
+struct Candidate {
+    votes: Votes,
+}
+
+#[derive(Debug)]
 enum Role {
-    Follower { timeout: Timeout, voted_yet: bool },
-    Candidate { votes: Votes },
+    Follower(Follower),
+    Candidate(Candidate),
     Leader,
 }
 
@@ -102,18 +114,6 @@ impl server::Raft for Raft {
     }
 }
 
-fn create_timer(mut tx: Sender<Message>) -> (impl Future<Output = ()>, AbortHandle) {
-    let when = now() + Duration::from_secs(10);
-    let delay = delay(when);
-    let (abortable_delay, abort_handle) = abortable(delay);
-    let task = async move {
-        if abortable_delay.await.is_ok() {
-            tx.send(Message::TimerElapsed).await.expect("channel error");
-        }
-    };
-    (task, abort_handle)
-}
-
 fn spawn_timer(mut tx: Sender<Message>) -> Timeout {
     let when = now() + Duration::from_secs(10);
     let delay = delay(when);
@@ -151,99 +151,45 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // use super::*;
 
-    #[tokio::test]
-    async fn new_machine_times_out_after_10s() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let _ = Machine::new(tx);
-        let message = rx.recv().await.unwrap();
-        assert!(match message {
-            Message::TimerElapsed => true,
-            _ => false,
-        });
-    }
-}
-
-async fn request_votes_as(tx: Sender<Message>) {
-    for n in 1..NUM_NODES {
-        let mut vote_tx = tx.clone();
-        let when = tokio::clock::now() + Duration::from_secs(1 + n as u64);
-        delay(when).await;
-        vote_tx
-            .send(Message::Vote(true))
-            .await
-            .expect("channel error");
-    }
+    // #[tokio::test]
+    // async fn new_machine_times_out_after_10s() {
+    //     let (tx, mut rx) = mpsc::channel(1);
+    //     let _ = Machine::new(tx);
+    //     let message = rx.recv().await.unwrap();
+    //     assert!(match message {
+    //         Message::TimerElapsed => true,
+    //         _ => false,
+    //     });
+    // }
 }
 
 impl Machine {
     fn new(tx: Sender<Message>) -> Self {
         let timeout = spawn_timer(tx.clone());
         let voted_yet = false;
-        let role = Role::Follower { timeout, voted_yet };
+        let role = Role::Follower(Follower { timeout, voted_yet });
         let term = 0;
         let state = State { role, term };
         Machine { state, tx }
     }
 
-    fn to_candidate(&mut self) -> (State, impl Future<Output = ()>) {
-        let votes = Votes { yes: 1, no: 0 };
-        let role = Role::Candidate { votes };
-        let state = State { role, ..self.state };
-        let request_votes = request_votes_as(self.tx.clone());
-        (state, request_votes)
-    }
-
-    fn to_follower(&mut self) -> (State, impl Future<Output = ()>) {
-        let voted_yet = false;
-        let (delay, abort_handle) = create_timer(self.tx.clone());
-        let timeout = Timeout { abort_handle };
-        let role = Role::Follower { timeout, voted_yet };
-        let term = self.state.term + 1;
-        let state = State { role, term };
-        (state, delay)
-    }
-
-    fn to_leader(&mut self) -> (State, impl Future<Output = ()>) {
-        let role = Role::Leader;
-        let state = State { role, ..self.state };
-        let task = async {
-            unimplemented!();
-        };
-        (state, task)
-    }
-
     fn as_follower(&mut self) {
         let timeout = spawn_timer(self.tx.clone());
         let voted_yet = false;
-        self.state.role = Role::Follower { timeout, voted_yet };
-        self.state.term += 1;
+        self.state.role = Role::Follower(Follower { timeout, voted_yet });
     }
 
     fn as_candidate(&mut self) {
         let votes = Votes { yes: 1, no: 0 };
-        self.state.role = Role::Candidate { votes };
+        self.state.role = Role::Candidate(Candidate { votes });
+        self.state.term += 1;
         request_votes(self.tx.clone(), self.state.term);
     }
 
     fn as_leader(&mut self) {
         self.state.role = Role::Leader;
-    }
-
-    fn transition_as(&mut self, message: Message) {
-        use Message::*;
-        use Role::*;
-
-        println!("message: {:?}", message);
-        let role = &self.state.role;
-        let (state, task) = match (role, message) {
-            (Follower { .. }, TimerElapsed) => self.to_candidate(),
-            _ => unimplemented!(),
-        };
-        tokio::spawn(task);
-        self.state = state;
-        println!("state: {:?}", self.state);
     }
 
     fn transition(&mut self, message: Message) {
@@ -252,23 +198,20 @@ impl Machine {
 
         println!("message: {:?}", message);
         match self.state.role {
-            Follower {
-                ref mut timeout,
-                ref mut voted_yet,
-            } => match message {
+            Follower(ref mut follower) => match message {
                 TimerElapsed => self.as_candidate(),
                 AppendEntries((resp_tx, _)) => {
-                    *timeout = spawn_timer(self.tx.clone());
+                    follower.timeout = spawn_timer(self.tx.clone());
                     respond(resp_tx, ());
                 }
                 VoteRequest((resp_tx, _)) => {
-                    let vote = !*voted_yet;
-                    *voted_yet = true;
+                    let vote = !follower.voted_yet;
+                    follower.voted_yet = true;
                     respond(resp_tx, vote);
                 }
                 Vote(_) => {}
             },
-            Candidate { ref mut votes, .. } => match message {
+            Candidate(ref mut candidate) => match message {
                 VoteRequest((resp_tx, _)) => respond(resp_tx, false),
                 AppendEntries((resp_tx, _)) => {
                     self.as_follower();
@@ -276,13 +219,13 @@ impl Machine {
                 }
                 Vote(yes) => {
                     if yes {
-                        votes.yes += 1
+                        candidate.votes.yes += 1
                     } else {
-                        votes.no += 1
+                        candidate.votes.no += 1
                     }
-                    let all = votes.yes + votes.no;
+                    let all = candidate.votes.yes + candidate.votes.no;
                     if all >= QUORUM {
-                        if votes.yes > votes.no {
+                        if candidate.votes.yes > candidate.votes.no {
                             self.as_leader();
                         } else {
                             self.as_follower();
@@ -304,8 +247,7 @@ async fn message_loop(mut rx: Receiver<Message>, tx: Sender<Message>) {
     let mut state = Machine::new(tx.clone());
 
     while let Some(message) = rx.recv().await {
-        // state.transition(message);
-        state.transition_as(message);
+        state.transition(message);
     }
 }
 
@@ -317,7 +259,8 @@ async fn listen(tx: Sender<Message>) {
     let raft = Raft { tx };
     let svc = server::RaftServer::new(raft);
     Server::builder()
-        .serve(addr, svc)
+        .add_service(svc)
+        .serve(addr)
         .await
         .expect("server could not start");
 }
