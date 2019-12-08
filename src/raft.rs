@@ -4,10 +4,9 @@
 
 use futures_util::future::{abortable, AbortHandle};
 use std::time::Duration;
-use tokio::clock::now;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
-use tokio::timer::delay;
+use tokio::timer::delay_for;
 
 const TIMEOUT: u64 = 5;
 const NUM_NODES: u8 = 3;
@@ -191,8 +190,7 @@ impl Drop for Timeout {
 }
 
 fn spawn_timer(tx: &Sender<Message>) -> Timeout {
-    let when = now() + Duration::from_secs(TIMEOUT);
-    let delay = delay(when);
+    let delay = delay_for(Duration::from_secs(TIMEOUT));
     let (abortable_delay, abort_handle) = abortable(delay);
     let mut tx = tx.clone();
     tokio::spawn(async move {
@@ -207,8 +205,7 @@ fn spawn_timer(tx: &Sender<Message>) -> Timeout {
 fn request_votes(tx: &Sender<Message>, _term: i32) {
     for n in 1..NUM_NODES {
         let mut vote_tx = tx.clone();
-        let when = tokio::clock::now() + Duration::from_secs(1 + n as u64);
-        let delay = delay(when);
+        let delay = delay_for(Duration::from_secs(1 + n as u64));
         tokio::spawn(async move {
             delay.await;
             vote_tx
@@ -260,6 +257,20 @@ mod follower {
             let yes = message.vote().expect("should be a vote message");
             assert_eq!(yes, true);
         }
+    }
+
+    #[tokio::test]
+    async fn react_to_append_entries() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let follower = new_follower(tx.clone());
+        let (resp_tx, _resp_rx) = oneshot::channel();
+        delay_for(Duration::from_secs(1)).await;
+        let _variant = follower.append_entries(resp_tx);
+        let result = rx
+            .recv()
+            .timeout(Duration::from_millis(TIMEOUT * 1000 - 100))
+            .await;
+        assert!(result.is_err(), "there should be no follower timeout");
     }
 }
 
@@ -337,6 +348,7 @@ pub async fn message_loop(mut rx: Receiver<Message>, tx: Sender<Message>) {
 
     let mut sm = initial.into_enum();
     while let Some(message) = rx.recv().await {
+        println!("message: {:?}", &message);
         sm = sm.transition(message);
     }
 }
