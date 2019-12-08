@@ -1,4 +1,7 @@
-// http://cliffle.com/blog/rust-typestate/#variation-state-type-parameter
+// Code inspired by:
+// https://yoric.github.io/post/rust-typestate
+// https://github.com/rustic-games/sm
+
 use futures_util::future::{abortable, AbortHandle};
 use std::time::Duration;
 use tokio::clock::now;
@@ -273,7 +276,7 @@ fn request_votes(tx: &Sender<Message>, _term: i32) {
 }
 
 #[cfg(test)]
-mod tests {
+mod follower {
     use super::*;
     use tokio::prelude::*;
     use tokio::sync::mpsc;
@@ -284,13 +287,6 @@ mod tests {
         let term = 0;
         let inner = RaftInner { term, tx };
         let state = Follower { timeout, voted_yet };
-        Raft { inner, state }
-    }
-
-    fn new_candidate(tx: Sender<Message>) -> Raft<Candidate> {
-        let inner = RaftInner { term: 42, tx };
-        let votes = Votes { yes: 0, no: 0 };
-        let state = Candidate { votes };
         Raft { inner, state }
     }
 
@@ -310,6 +306,20 @@ mod tests {
             let yes = message.vote().expect("should be a vote message");
             assert_eq!(yes, true);
         }
+    }
+}
+
+#[cfg(test)]
+mod candidate {
+    use super::*;
+    use tokio::prelude::*;
+    use tokio::sync::mpsc;
+
+    fn new_candidate(tx: Sender<Message>) -> Raft<Candidate> {
+        let inner = RaftInner { term: 42, tx };
+        let votes = Votes { yes: 0, no: 0 };
+        let state = Candidate { votes };
+        Raft { inner, state }
     }
 
     #[tokio::test]
@@ -358,7 +368,7 @@ mod tests {
     }
 }
 
-pub async fn blub(mut rx: Receiver<Message>, tx: Sender<Message>) {
+pub async fn message_loop(mut rx: Receiver<Message>, tx: Sender<Message>) {
     let timeout = spawn_timer(&tx);
     let voted_yet = false;
     let term = 0;
