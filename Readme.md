@@ -4,9 +4,8 @@ rust rpc playground
 
 ## Build
 
-(tested on 1.39-beta)
+(tested on 1.39)
 
 ```
-rustup override set beta
 cargo build
 ```
