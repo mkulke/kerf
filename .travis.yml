@@ -2,10 +2,14 @@ language: rust
 rust:
   - stable
   - beta
-  - nightly
 cache: cargo
 dist: xenial
 os:
   - linux
 before_script:
   - rustup component add rustfmt
+  - rustup component add clippy
+script:
+  - cargo clippy --all-targets --all-features -- -D warnings
+  - cargo test
+

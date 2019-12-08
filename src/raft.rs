@@ -55,7 +55,7 @@ impl Message {
 trait AsEnum {
     type Enum;
 
-    fn as_enum(self) -> Self::Enum;
+    fn into_enum(self) -> Self::Enum;
 }
 
 enum Variant {
@@ -73,11 +73,11 @@ impl Variant {
             (Follower(f), AppendEntries(o)) => f.append_entries(o),
             (Follower(f), TimerElapsed) => f.timeout(),
             (Follower(f), VoteRequest(o)) => f.vote(o),
-            (Follower(f), Vote(_)) => f.as_enum(),
+            (Follower(f), Vote(_)) => f.into_enum(),
             (Candidate(c), Vote(v)) => c.receive_vote(v),
             (Candidate(c), VoteRequest(o)) => c.vote(o),
-            (Candidate(c), _) => c.as_enum(),
-            (Leader(y), _) => y.as_enum(),
+            (Candidate(c), _) => c.into_enum(),
+            (Leader(y), _) => y.into_enum(),
         }
     }
 
@@ -112,7 +112,7 @@ impl Variant {
 impl AsEnum for Raft<Follower> {
     type Enum = Variant;
 
-    fn as_enum(self) -> Self::Enum {
+    fn into_enum(self) -> Self::Enum {
         Variant::Follower(self)
     }
 }
@@ -120,7 +120,7 @@ impl AsEnum for Raft<Follower> {
 impl AsEnum for Raft<Candidate> {
     type Enum = Variant;
 
-    fn as_enum(self) -> Self::Enum {
+    fn into_enum(self) -> Self::Enum {
         Variant::Candidate(self)
     }
 }
@@ -128,7 +128,7 @@ impl AsEnum for Raft<Candidate> {
 impl AsEnum for Raft<Leader> {
     type Enum = Variant;
 
-    fn as_enum(self) -> Self::Enum {
+    fn into_enum(self) -> Self::Enum {
         Variant::Leader(self)
     }
 }
@@ -145,7 +145,7 @@ struct Raft<S> {
 }
 
 impl Raft<Follower> {
-    fn to_candidate(mut self) -> Raft<Candidate> {
+    fn into_candidate(mut self) -> Raft<Candidate> {
         self.inner.term += 1;
         let votes = Votes { yes: 1, no: 0 };
         let candidate = Candidate { votes };
@@ -157,7 +157,7 @@ impl Raft<Follower> {
     }
 
     fn timeout(self) -> Variant {
-        self.to_candidate().as_enum()
+        self.into_candidate().into_enum()
     }
 
     fn vote(mut self, oneshot: Oneshot<bool>) -> Variant {
@@ -167,25 +167,25 @@ impl Raft<Follower> {
             oneshot.send(true).expect("oneshot error");
             self.state.voted_yet = true;
         }
-        self.as_enum()
+        self.into_enum()
     }
 
     fn append_entries(mut self, oneshot: Oneshot<()>) -> Variant {
         oneshot.send(()).expect("oneshot error");
         self.state.timeout = spawn_timer(&self.inner.tx.clone());
-        self.as_enum()
+        self.into_enum()
     }
 }
 
 impl Raft<Candidate> {
-    fn to_leader(self) -> Raft<Leader> {
+    fn into_leader(self) -> Raft<Leader> {
         Raft {
             inner: self.inner,
             state: Leader,
         }
     }
 
-    fn to_follower(self) -> Raft<Follower> {
+    fn into_follower(self) -> Raft<Follower> {
         let timeout = spawn_timer(&self.inner.tx);
         let voted_yet = false;
         let follower = Follower { timeout, voted_yet };
@@ -203,18 +203,18 @@ impl Raft<Candidate> {
             votes.no += 1
         }
         if votes.yes >= QUORUM {
-            self.to_leader().as_enum()
+            self.into_leader().into_enum()
         } else if votes.no >= QUORUM {
-            self.to_follower().as_enum()
+            self.into_follower().into_enum()
         } else {
-            self.as_enum()
+            self.into_enum()
         }
     }
 
     // TODO: term
     fn vote(self, oneshot: Oneshot<bool>) -> Variant {
         oneshot.send(false).expect("oneshot error");
-        self.as_enum()
+        self.into_enum()
     }
 }
 
@@ -295,7 +295,7 @@ mod follower {
         let n: usize = NUM_NODES as usize - 1;
         let (tx, mut rx) = mpsc::channel(n);
         let follower = new_follower(tx);
-        follower.to_candidate();
+        follower.into_candidate();
         for _ in 0..n {
             let message = rx
                 .recv()
@@ -337,7 +337,7 @@ mod candidate {
             .expect("should be follower");
         let message = rx
             .recv()
-            .timeout(Duration::from_millis(TIMEOUT * 1000 + 100).into())
+            .timeout(Duration::from_millis(TIMEOUT * 1000 + 100))
             .await
             .expect("test takes too long")
             .unwrap();
@@ -350,7 +350,7 @@ mod candidate {
     #[test]
     fn receiving_votes() {
         let (tx, _) = mpsc::channel(1);
-        let mut candidate = new_candidate(tx.clone());
+        let mut candidate = new_candidate(tx);
         let mut variant = candidate.receive_vote(true);
         candidate = variant.candidate().unwrap();
         let mut votes = &candidate.state.votes;
@@ -376,7 +376,7 @@ pub async fn message_loop(mut rx: Receiver<Message>, tx: Sender<Message>) {
     let state = Follower { timeout, voted_yet };
     let initial = Raft { inner, state };
 
-    let mut sm = initial.as_enum();
+    let mut sm = initial.into_enum();
     while let Some(message) = rx.recv().await {
         sm = sm.transition(message);
     }
