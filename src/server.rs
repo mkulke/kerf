@@ -20,18 +20,16 @@ pub struct Service {
 }
 
 impl Service {
-    async fn send_append_entries(mut tx: Sender<Message>, _term: i32) -> Result<()> {
+    async fn send_append_entries(mut tx: Sender<Message>, term: i32) -> Result<()> {
         let (resp_tx, resp_rx) = oneshot::channel();
-        // tx.send(Message::AppendEntries((resp_tx, term))).await?;
-        tx.send(Message::AppendEntries(resp_tx)).await?;
+        tx.send(Message::AppendEntries((resp_tx, term))).await?;
         resp_rx.await?;
         Ok(())
     }
 
-    async fn send_vote_request(mut tx: Sender<Message>, _term: i32) -> Result<bool> {
+    async fn send_vote_request(mut tx: Sender<Message>, term: i32) -> Result<bool> {
         let (resp_tx, resp_rx) = oneshot::channel::<bool>();
-        // tx.send(Message::VoteRequest((resp_tx, term))).await?;
-        tx.send(Message::VoteRequest(resp_tx)).await?;
+        tx.send(Message::VoteRequest((resp_tx, term))).await?;
         let resp = resp_rx.await?;
         Ok(resp)
     }

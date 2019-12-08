@@ -16,9 +16,9 @@ type Oneshot<T> = oneshot::Sender<T>;
 
 #[derive(Debug)]
 pub enum Message {
-    AppendEntries(Oneshot<()>),
+    AppendEntries((Oneshot<()>, i32)),
     TimerElapsed,
-    VoteRequest(Oneshot<bool>),
+    VoteRequest((Oneshot<bool>, i32)),
     Vote(bool),
 }
 
@@ -40,12 +40,12 @@ impl Variant {
         use Variant::*;
 
         match (self, message) {
-            (Follower(f), AppendEntries(o)) => f.append_entries(o),
+            (Follower(f), AppendEntries((o, _))) => f.append_entries(o),
             (Follower(f), TimerElapsed) => f.timeout(),
-            (Follower(f), VoteRequest(o)) => f.vote(o),
+            (Follower(f), VoteRequest((o, _))) => f.vote(o),
             (Follower(f), Vote(_)) => f.into_enum(),
             (Candidate(c), Vote(v)) => c.receive_vote(v),
-            (Candidate(c), VoteRequest(o)) => c.vote(o),
+            (Candidate(c), VoteRequest((o, _))) => c.vote(o),
             (Candidate(c), _) => c.into_enum(),
             (Leader(y), _) => y.into_enum(),
         }
