@@ -23,35 +23,6 @@ pub enum Message {
     Vote(bool),
 }
 
-impl Message {
-    #[allow(dead_code)]
-    fn append_entries(self) -> Option<Oneshot<()>> {
-        if let Self::AppendEntries(o) = self {
-            Some(o)
-        } else {
-            None
-        }
-    }
-
-    #[allow(dead_code)]
-    fn timer_elapsed(self) -> Option<()> {
-        if let Self::TimerElapsed = self {
-            Some(())
-        } else {
-            None
-        }
-    }
-
-    #[allow(dead_code)]
-    fn vote(self) -> Option<bool> {
-        if let Self::Vote(b) = self {
-            Some(b)
-        } else {
-            None
-        }
-    }
-}
-
 trait AsEnum {
     type Enum;
 
@@ -78,33 +49,6 @@ impl Variant {
             (Candidate(c), VoteRequest(o)) => c.vote(o),
             (Candidate(c), _) => c.into_enum(),
             (Leader(y), _) => y.into_enum(),
-        }
-    }
-
-    #[allow(dead_code)]
-    fn follower(self) -> Option<Raft<Follower>> {
-        if let Self::Follower(f) = self {
-            Some(f)
-        } else {
-            None
-        }
-    }
-
-    #[allow(dead_code)]
-    fn candidate(self) -> Option<Raft<Candidate>> {
-        if let Self::Candidate(c) = self {
-            Some(c)
-        } else {
-            None
-        }
-    }
-
-    #[allow(dead_code)]
-    fn leader(self) -> Option<Raft<Leader>> {
-        if let Self::Leader(l) = self {
-            Some(l)
-        } else {
-            None
         }
     }
 }
@@ -140,7 +84,7 @@ struct RaftInner {
 
 struct Raft<S> {
     inner: RaftInner,
-    /// 0-sized field, doesn't exist at runtime.
+    // 0-sized field, doesn't exist at runtime.
     state: S,
 }
 
@@ -290,6 +234,16 @@ mod follower {
         Raft { inner, state }
     }
 
+    impl Message {
+        fn vote(self) -> Option<bool> {
+            if let Self::Vote(b) = self {
+                Some(b)
+            } else {
+                None
+            }
+        }
+    }
+
     #[tokio::test]
     async fn promotion_to_candidate() {
         let n: usize = NUM_NODES as usize - 1;
@@ -312,6 +266,7 @@ mod follower {
 #[cfg(test)]
 mod candidate {
     use super::*;
+    use enum_extract::let_extract;
     use tokio::prelude::*;
     use tokio::sync::mpsc;
 
@@ -322,19 +277,26 @@ mod candidate {
         Raft { inner, state }
     }
 
+    impl Message {
+        fn timer_elapsed(self) -> Option<()> {
+            if let Self::TimerElapsed = self {
+                Some(())
+            } else {
+                None
+            }
+        }
+    }
+
     #[tokio::test]
     async fn demotion_to_follower() {
         let (tx, mut rx) = mpsc::channel(1);
         let candidate = new_candidate(tx.clone());
+        let variant = candidate.receive_vote(false);
+        let_extract!(Variant::Candidate(candidate), variant, panic!());
+        let variant = candidate.receive_vote(false);
         // note: we have to keep the follower in scope
         // or the timeout will be dropped
-        let _follower = candidate
-            .receive_vote(false)
-            .candidate()
-            .expect("should be candidate")
-            .receive_vote(false)
-            .follower()
-            .expect("should be follower");
+        let_extract!(Variant::Follower(_follower), variant, panic!());
         let message = rx
             .recv()
             .timeout(Duration::from_millis(TIMEOUT * 1000 + 100))
@@ -346,25 +308,22 @@ mod candidate {
             .expect("should be a timeout message");
     }
 
-    // #[tokio::test]
     #[test]
     fn receiving_votes() {
         let (tx, _) = mpsc::channel(1);
-        let mut candidate = new_candidate(tx);
+        let candidate = new_candidate(tx);
         let mut variant = candidate.receive_vote(true);
-        candidate = variant.candidate().unwrap();
+        let_extract!(Variant::Candidate(candidate), variant, panic!());
         let mut votes = &candidate.state.votes;
         assert_eq!(votes.yes, 1);
         assert_eq!(votes.no, 0);
         variant = candidate.receive_vote(false);
-        candidate = variant.candidate().expect("should be candidate");
+        let_extract!(Variant::Candidate(candidate), variant, panic!());
         votes = &candidate.state.votes;
         assert_eq!(votes.yes, 1);
         assert_eq!(votes.no, 1);
-        candidate
-            .receive_vote(true)
-            .leader()
-            .expect("should be leader");
+        let variant = candidate.receive_vote(true);
+        let_extract!(Variant::Leader(_l), variant, panic!());
     }
 }
 
