@@ -219,8 +219,8 @@ fn request_votes(tx: &Sender<Message>, _term: i32) {
 #[cfg(test)]
 mod follower {
     use super::*;
-    use tokio::prelude::*;
     use tokio::sync::mpsc;
+    use tokio::time::timeout;
 
     fn new_follower(tx: Sender<Message>) -> Raft<Follower> {
         let timeout = spawn_timer(&tx);
@@ -248,12 +248,13 @@ mod follower {
         let follower = new_follower(tx);
         follower.into_candidate();
         for _ in 0..n {
-            let message = rx
-                .recv()
-                .timeout(Duration::from_millis(NUM_NODES as u64 * 1000 + 100))
-                .await
-                .expect("test takes too long")
-                .unwrap();
+            let message = timeout(
+                Duration::from_millis(NUM_NODES as u64 * 1000 + 100),
+                rx.recv(),
+            )
+            .await
+            .expect("test takes too long")
+            .unwrap();
             let yes = message.vote().expect("should be a vote message");
             assert_eq!(yes, true);
         }
@@ -266,10 +267,7 @@ mod follower {
         let (resp_tx, _resp_rx) = oneshot::channel();
         delay_for(Duration::from_secs(1)).await;
         let _variant = follower.append_entries(resp_tx);
-        let result = rx
-            .recv()
-            .timeout(Duration::from_millis(TIMEOUT * 1000 - 100))
-            .await;
+        let result = timeout(Duration::from_millis(TIMEOUT * 1000 - 100), rx.recv()).await;
         assert!(result.is_err(), "there should be no follower timeout");
     }
 }
@@ -278,8 +276,8 @@ mod follower {
 mod candidate {
     use super::*;
     use enum_extract::let_extract;
-    use tokio::prelude::*;
     use tokio::sync::mpsc;
+    use tokio::time::timeout;
 
     fn new_candidate(tx: Sender<Message>) -> Raft<Candidate> {
         let inner = RaftInner { term: 42, tx };
@@ -308,9 +306,7 @@ mod candidate {
         // note: we have to keep the follower in scope
         // or the timeout will be dropped
         let_extract!(Variant::Follower(_follower), variant, panic!());
-        let message = rx
-            .recv()
-            .timeout(Duration::from_millis(TIMEOUT * 1000 + 100))
+        let message = timeout(Duration::from_millis(TIMEOUT * 1000 + 100), rx.recv())
             .await
             .expect("test takes too long")
             .unwrap();
