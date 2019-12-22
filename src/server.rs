@@ -12,7 +12,7 @@ pub mod proto {
     tonic::include_proto!("raft");
 }
 
-use proto::{server, Empty, Term, VoteReply};
+use proto::{raft_server, Empty, Term, VoteReply};
 
 #[derive(Debug)]
 pub struct Service {
@@ -36,7 +36,7 @@ impl Service {
 }
 
 #[tonic::async_trait]
-impl server::Raft for Service {
+impl raft_server::Raft for Service {
     async fn append_entries(&self, request: Request<Term>) -> Result<Response<Empty>, Status> {
         let term = request.into_inner().term;
         Service::send_append_entries(self.tx.clone(), term)
@@ -60,7 +60,7 @@ async fn listen(tx: Sender<Message>) {
     println!("Listening on: {}", addr);
 
     let raft = Service { tx };
-    let svc = server::RaftServer::new(raft);
+    let svc = raft_server::RaftServer::new(raft);
     Server::builder()
         .add_service(svc)
         .serve(addr)

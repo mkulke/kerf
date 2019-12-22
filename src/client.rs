@@ -6,9 +6,8 @@ pub mod raft {
     tonic::include_proto!("raft");
 }
 
+use raft::raft_client::RaftClient;
 use raft::Term;
-
-use raft::client::RaftClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {

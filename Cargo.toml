@@ -13,10 +13,10 @@ name = "client"
 path = "src/client.rs"
 
 [dependencies]
-tonic = "=0.1.0-alpha.5"
+tonic = "=0.1.0-beta.1"
 bytes = "0.4"
 prost = "0.5"
-tokio = "=0.2.0-alpha.6"
+tokio = { version = "0.2", features = ["full"] }
 futures = "0.3"
 futures-util = "0.3"
 async-stream = "0.1.2"
@@ -26,4 +26,4 @@ anyhow = "1.0"
 enum_extract = "0.1"
 
 [build-dependencies]
-tonic-build = "=0.1.0-alpha.5"
+tonic-build = "=0.1.0-beta.1"

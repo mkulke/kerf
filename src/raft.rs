@@ -6,7 +6,7 @@ use futures_util::future::{abortable, AbortHandle};
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
-use tokio::timer::delay_for;
+use tokio::time::delay_for;
 
 const TIMEOUT: u64 = 5;
 const NUM_NODES: u8 = 3;
