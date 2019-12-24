@@ -19,7 +19,7 @@ pub enum Message {
     AppendEntries((Oneshot<i32>, i32)),
     TimerElapsed,
     VoteRequest((Oneshot<(i32, bool)>, i32)),
-    Vote(bool),
+    Vote((i32, bool)),
 }
 
 trait AsEnum {
@@ -155,7 +155,8 @@ impl Raft<Candidate> {
         self.into_enum()
     }
 
-    fn receive_vote(mut self, yes: bool) -> Variant {
+    fn receive_vote(mut self, vote: (i32, bool)) -> Variant {
+        let (_term, yes) = vote;
         let votes = &mut self.state.votes;
         if yes {
             *votes += 1;
@@ -212,14 +213,14 @@ fn spawn_timer(tx: &Sender<Message>) -> Timeout {
 }
 
 // TODO: the individual operations can fail, is it a 'no' vote?
-fn request_votes(tx: &Sender<Message>, _term: i32) {
+fn request_votes(tx: &Sender<Message>, term: i32) {
     for n in 1..NUM_NODES {
         let mut vote_tx = tx.clone();
         let delay = delay_for(Duration::from_secs(1 + n as u64));
         tokio::spawn(async move {
             delay.await;
             vote_tx
-                .send(Message::Vote(true))
+                .send(Message::Vote((term, true)))
                 .await
                 .expect("channel error");
         });
@@ -243,7 +244,7 @@ mod follower {
 
     impl Message {
         fn vote(self) -> Option<bool> {
-            if let Self::Vote(b) = self {
+            if let Self::Vote((_, b)) = self {
                 Some(b)
             } else {
                 None
@@ -347,15 +348,18 @@ mod candidate {
     async fn receiving_votes() {
         let (tx, _) = mpsc::channel(1);
         let candidate = new_candidate(tx);
-        let mut variant = candidate.receive_vote(true);
+        let vote = (42, true);
+        let mut variant = candidate.receive_vote(vote);
         let_extract!(Variant::Candidate(candidate), variant, panic!());
         let mut votes = &candidate.state.votes;
         assert_eq!(*votes, 1);
-        variant = candidate.receive_vote(false);
+        let vote = (42, false);
+        variant = candidate.receive_vote(vote);
         let_extract!(Variant::Candidate(candidate), variant, panic!());
         votes = &candidate.state.votes;
         assert_eq!(*votes, 1);
-        let variant = candidate.receive_vote(true);
+        let vote = (42, true);
+        let variant = candidate.receive_vote(vote);
         let_extract!(Variant::Leader(_l), variant, panic!());
     }
 }
