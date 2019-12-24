@@ -16,9 +16,9 @@ type Oneshot<T> = oneshot::Sender<T>;
 
 #[derive(Debug)]
 pub enum Message {
-    AppendEntries((Oneshot<()>, i32)),
+    AppendEntries((Oneshot<i32>, i32)),
     TimerElapsed,
-    VoteRequest((Oneshot<bool>, i32)),
+    VoteRequest((Oneshot<(i32, bool)>, i32)),
     Vote(bool),
 }
 
@@ -105,18 +105,20 @@ impl Raft<Follower> {
         self.into_candidate().into_enum()
     }
 
-    fn vote(mut self, oneshot: Oneshot<bool>) -> Variant {
+    fn vote(mut self, oneshot: Oneshot<(i32, bool)>) -> Variant {
+        let term = self.inner.term;
         if self.state.voted_yet {
-            oneshot.send(false).expect("oneshot error");
+            oneshot.send((term, false)).expect("oneshot error");
         } else {
-            oneshot.send(true).expect("oneshot error");
+            oneshot.send((term, true)).expect("oneshot error");
             self.state.voted_yet = true;
         }
         self.into_enum()
     }
 
-    fn append_entries(mut self, oneshot: Oneshot<()>) -> Variant {
-        oneshot.send(()).expect("oneshot error");
+    fn append_entries(mut self, oneshot: Oneshot<i32>) -> Variant {
+        let term = self.inner.term;
+        oneshot.send(term).expect("oneshot error");
         self.state.timeout = spawn_timer(&self.inner.tx.clone());
         self.into_enum()
     }
@@ -140,8 +142,9 @@ impl Raft<Candidate> {
         }
     }
 
-    fn append_entries(self, oneshot: Oneshot<()>) -> Variant {
-        oneshot.send(()).expect("oneshot error");
+    fn append_entries(self, oneshot: Oneshot<i32>) -> Variant {
+        let term = self.inner.term;
+        oneshot.send(term).expect("oneshot error");
         self.into_follower().into_enum()
     }
 
@@ -166,8 +169,9 @@ impl Raft<Candidate> {
     }
 
     // TODO: term
-    fn vote(self, oneshot: Oneshot<bool>) -> Variant {
-        oneshot.send(false).expect("oneshot error");
+    fn vote(self, oneshot: Oneshot<(i32, bool)>) -> Variant {
+        let term = self.inner.term;
+        oneshot.send((term, false)).expect("oneshot error");
         self.into_enum()
     }
 }
