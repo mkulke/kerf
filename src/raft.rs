@@ -144,6 +144,19 @@ impl RaftInner {
         self.voted_for = None;
     }
 
+    fn start_election(mut self) -> Raft<Candidate> {
+        self.new_term();
+        self.voted_for = Some(self.candidate_id.clone());
+        let votes = 1;
+        let timeout = spawn_timer(&self.tx);
+        let candidate = Candidate { votes, timeout };
+        request_votes(&self.tx, self.term);
+        Raft {
+            inner: self,
+            state: candidate,
+        }
+    }
+
     fn vote(&mut self, term: i32, candidate_id: String, oneshot: Oneshot<Reply>) {
         let current_term = self.term;
         let vote_granted = {
@@ -181,17 +194,8 @@ struct Raft<S> {
 }
 
 impl Raft<Follower> {
-    fn into_candidate(mut self) -> Raft<Candidate> {
-        self.inner.new_term();
-        self.inner.voted_for = Some(self.inner.candidate_id.clone());
-        let votes = 1;
-        let timeout = spawn_timer(&self.inner.tx);
-        let candidate = Candidate { votes, timeout };
-        request_votes(&self.inner.tx, self.inner.term);
-        Raft {
-            inner: self.inner,
-            state: candidate,
-        }
+    fn into_candidate(self) -> Raft<Candidate> {
+        self.inner.start_election()
     }
 
     fn timeout(self) -> Variant {
@@ -315,6 +319,7 @@ fn request_votes(tx: &Sender<Message>, term: i32) {
 #[cfg(test)]
 mod follower {
     use super::*;
+    use enum_extract::let_extract;
     use tokio::sync::mpsc;
     use tokio::time::timeout;
 
@@ -333,6 +338,33 @@ mod follower {
         Raft { inner, state }
     }
 
+    #[tokio::test]
+    async fn react_to_append_entries() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let follower = new_follower(tx.clone());
+        let (resp_tx, _resp_rx) = oneshot::channel();
+        delay_for(Duration::from_secs(1)).await;
+        let _variant = follower.append_entries(0, resp_tx);
+        let result = timeout(Duration::from_millis(TIMEOUT * 1000 - 100), rx.recv()).await;
+        assert!(result.is_err(), "there should be no follower timeout");
+    }
+
+    #[tokio::test]
+    async fn promotion_to_candidate_after_timeout() {
+        let (tx, _) = mpsc::channel(1);
+        let follower = new_follower(tx.clone());
+        let mut variant = follower.into_enum();
+        variant = variant.transition(Message::TimerElapsed);
+        let_extract!(Variant::Candidate(_candidate), variant, panic!());
+    }
+}
+
+#[cfg(test)]
+mod inner {
+    use super::*;
+    use tokio::sync::{mpsc, oneshot};
+    use tokio::time::timeout;
+
     impl Message {
         fn vote(self) -> Option<bool> {
             if let Self::Vote((_, b)) = self {
@@ -343,12 +375,53 @@ mod follower {
         }
     }
 
+    fn new_inner(tx: Sender<Message>) -> RaftInner {
+        RaftInner {
+            candidate_id: "test".to_string(),
+            voted_for: Some("test".to_string()),
+            term: 42,
+            tx,
+        }
+    }
+
     #[tokio::test]
-    async fn promotion_to_candidate() {
+    async fn vote() {
+        let (tx, _) = mpsc::channel(1);
+        let mut inner = new_inner(tx);
+        inner.voted_for = None;
+        let (resp_tx, resp_rx) = oneshot::channel();
+        inner.vote(42, "test".to_string(), resp_tx);
+        let (term, vote_granted) = timeout(Duration::from_millis(TIMEOUT * 1000 - 100), resp_rx)
+            .await
+            .expect("test takes too long")
+            .unwrap();
+        assert_eq!(vote_granted, true);
+        assert_eq!(term, 42);
+
+        inner.voted_for = Some("one".to_string());
+        let (resp_tx, resp_rx) = oneshot::channel();
+        inner.vote(42, "other".to_string(), resp_tx);
+        let (_, vote_granted) = timeout(Duration::from_millis(TIMEOUT * 1000 - 100), resp_rx)
+            .await
+            .expect("test takes too long")
+            .unwrap();
+        assert_eq!(vote_granted, false);
+
+        let (resp_tx, resp_rx) = oneshot::channel();
+        inner.vote(41, "test".to_string(), resp_tx);
+        let (_, vote_granted) = timeout(Duration::from_millis(TIMEOUT * 1000 - 100), resp_rx)
+            .await
+            .expect("test takes too long")
+            .unwrap();
+        assert_eq!(vote_granted, false);
+    }
+
+    #[tokio::test]
+    async fn start_election() {
         let n: usize = NUM_NODES as usize - 1;
-        let (tx, mut rx) = mpsc::channel(n);
-        let follower = new_follower(tx);
-        follower.into_candidate();
+        let (tx, mut rx) = mpsc::channel(1);
+        let inner = new_inner(tx);
+        inner.start_election();
         for _ in 0..n {
             let message = timeout(
                 Duration::from_millis(NUM_NODES as u64 * 1000 + 100),
@@ -361,17 +434,6 @@ mod follower {
             let yes = message.vote().expect("should be a vote message");
             assert_eq!(yes, true);
         }
-    }
-
-    #[tokio::test]
-    async fn react_to_append_entries() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let follower = new_follower(tx.clone());
-        let (resp_tx, _resp_rx) = oneshot::channel();
-        delay_for(Duration::from_secs(1)).await;
-        let _variant = follower.append_entries(0, resp_tx);
-        let result = timeout(Duration::from_millis(TIMEOUT * 1000 - 100), rx.recv()).await;
-        assert!(result.is_err(), "there should be no follower timeout");
     }
 }
 
@@ -425,7 +487,7 @@ mod candidate {
     }
 
     #[tokio::test]
-    async fn election_timeout() {
+    async fn election_times_out() {
         let (tx, mut rx) = mpsc::channel(1);
         let _candidate = new_candidate(tx.clone());
         let message = timeout(Duration::from_millis(TIMEOUT * 1000 + 100), rx.recv())
@@ -454,6 +516,18 @@ mod candidate {
         let vote = (42, true);
         let variant = candidate.receive_vote(vote);
         let_extract!(Variant::Leader(_l), variant, panic!());
+    }
+
+    #[tokio::test]
+    async fn restart_election_on_timeout() {
+        let (tx, _) = mpsc::channel(1);
+        let mut candidate = new_candidate(tx.clone());
+        candidate.state.votes = 42;
+        let mut variant = candidate.into_enum();
+        variant = variant.transition(Message::TimerElapsed);
+        let_extract!(Variant::Candidate(candidate), variant, panic!());
+        let votes = &candidate.state.votes;
+        assert_eq!(*votes, 1);
     }
 }
 
