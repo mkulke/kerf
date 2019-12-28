@@ -352,7 +352,7 @@ mod follower {
     #[tokio::test]
     async fn promotion_to_candidate_after_timeout() {
         let (tx, _) = mpsc::channel(1);
-        let follower = new_follower(tx.clone());
+        let follower = new_follower(tx);
         let mut variant = follower.into_enum();
         variant = variant.transition(Message::TimerElapsed);
         let_extract!(Variant::Candidate(_candidate), variant, panic!());
@@ -521,7 +521,7 @@ mod candidate {
     #[tokio::test]
     async fn restart_election_on_timeout() {
         let (tx, _) = mpsc::channel(1);
-        let mut candidate = new_candidate(tx.clone());
+        let mut candidate = new_candidate(tx);
         candidate.state.votes = 42;
         let mut variant = candidate.into_enum();
         variant = variant.transition(Message::TimerElapsed);
