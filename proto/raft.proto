@@ -3,15 +3,25 @@ syntax = "proto3";
 package raft;
 
 service Raft {
-  rpc AppendEntries(Term) returns (Term) {}
-  rpc RequestVote(Term) returns (VoteReply) {}
+  rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesReply) {}
+  rpc RequestVote (RequestVoteRequest) returns (RequestVoteReply) {}
 }
 
-message Term {
+message AppendEntriesRequest {
   int32 term = 1;
 }
 
-message VoteReply {
+message RequestVoteRequest {
   int32 term = 1;
-  bool yes = 2;
+  string candidateId = 2;
+}
+
+message AppendEntriesReply {
+  int32 term = 1;
+  bool success = 2;
+}
+
+message RequestVoteReply {
+  int32 term = 1;
+  bool voteGranted = 2;
 }

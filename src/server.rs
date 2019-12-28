@@ -6,13 +6,15 @@ use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
 
 pub mod raft;
-use raft::{message_loop, Message};
+use raft::{message_loop, Message, Reply, Rpc};
 
 pub mod proto {
     tonic::include_proto!("raft");
 }
 
-use proto::{raft_server, Term, VoteReply};
+use proto::{
+    raft_server, AppendEntriesReply, AppendEntriesRequest, RequestVoteReply, RequestVoteRequest,
+};
 
 #[derive(Debug)]
 pub struct Service {
@@ -20,16 +22,24 @@ pub struct Service {
 }
 
 impl Service {
-    async fn send_append_entries(mut tx: Sender<Message>, term: i32) -> Result<i32> {
-        let (resp_tx, resp_rx) = oneshot::channel::<i32>();
-        tx.send(Message::AppendEntries((resp_tx, term))).await?;
-        let term = resp_rx.await?;
-        Ok(term)
+    async fn send_append_entries(mut tx: Sender<Message>, term: i32) -> Result<Reply> {
+        let (resp_tx, resp_rx) = oneshot::channel::<Reply>();
+        let rpc = Rpc::AppendEntries(resp_tx);
+        let message = Message::Rpc { rpc, term };
+        tx.send(message).await?;
+        let resp = resp_rx.await?;
+        Ok(resp)
     }
 
-    async fn send_vote_request(mut tx: Sender<Message>, term: i32) -> Result<(i32, bool)> {
-        let (resp_tx, resp_rx) = oneshot::channel::<(i32, bool)>();
-        tx.send(Message::VoteRequest((resp_tx, term))).await?;
+    async fn send_vote_request(
+        mut tx: Sender<Message>,
+        term: i32,
+        candidate_id: String,
+    ) -> Result<Reply> {
+        let (resp_tx, resp_rx) = oneshot::channel::<Reply>();
+        let rpc = Rpc::VoteRequest((candidate_id, resp_tx));
+        let message = Message::Rpc { rpc, term };
+        tx.send(message).await?;
         let resp = resp_rx.await?;
         Ok(resp)
     }
@@ -37,20 +47,28 @@ impl Service {
 
 #[tonic::async_trait]
 impl raft_server::Raft for Service {
-    async fn append_entries(&self, request: Request<Term>) -> Result<Response<Term>, Status> {
+    async fn append_entries(
+        &self,
+        request: Request<AppendEntriesRequest>,
+    ) -> Result<Response<AppendEntriesReply>, Status> {
         let term = request.into_inner().term;
         Service::send_append_entries(self.tx.clone(), term)
             .await
             .map_err(|_| Status::new(Code::Internal, "channel error"))
-            .map(|term| Response::new(Term { term }))
+            .map(|(term, success)| Response::new(AppendEntriesReply { success, term }))
     }
 
-    async fn request_vote(&self, request: Request<Term>) -> Result<Response<VoteReply>, Status> {
-        let term = request.into_inner().term;
-        Service::send_vote_request(self.tx.clone(), term)
+    async fn request_vote(
+        &self,
+        request: Request<RequestVoteRequest>,
+    ) -> Result<Response<RequestVoteReply>, Status> {
+        let inner = request.into_inner();
+        let term = inner.term;
+        let candidate_id = inner.candidate_id;
+        Service::send_vote_request(self.tx.clone(), term, candidate_id)
             .await
             .map_err(|_| Status::new(Code::Internal, "channel error"))
-            .map(|(term, yes)| Response::new(VoteReply { term, yes }))
+            .map(|(term, vote_granted)| Response::new(RequestVoteReply { term, vote_granted }))
     }
 }
 
