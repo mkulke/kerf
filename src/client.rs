@@ -2,12 +2,12 @@ use anyhow::Result;
 use std::env;
 use tonic::Request;
 
-pub mod raft {
+pub mod proto {
     tonic::include_proto!("raft");
 }
 
-use raft::raft_client::RaftClient;
-use raft::{AppendEntriesRequest, RequestVoteRequest};
+use proto::raft_client::RaftClient;
+use proto::{AppendEntriesRequest, RequestVoteRequest};
 
 #[tokio::main]
 async fn main() -> Result<()> {

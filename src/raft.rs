@@ -2,6 +2,7 @@
 // https://yoric.github.io/post/rust-typestate
 // https://github.com/rustic-games/sm
 
+use crate::network::{request_vote, Address};
 use futures_util::future::{abortable, AbortHandle};
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -9,19 +10,16 @@ use tokio::sync::oneshot;
 use tokio::time::delay_for;
 
 const TIMEOUT: u64 = 5;
-const NUM_NODES: u8 = 3;
-const QUORUM: u8 = (NUM_NODES / 2) + 1;
 
 type Oneshot<T> = oneshot::Sender<T>;
+pub type Reply = (i32, bool);
 
 #[derive(Debug)]
 pub enum Message {
     Rpc { term: i32, rpc: Rpc },
     TimerElapsed,
-    Vote((i32, bool)),
+    Vote(Reply),
 }
-
-pub type Reply = (i32, bool);
 
 #[derive(Debug)]
 pub enum Rpc {
@@ -131,8 +129,24 @@ impl AsEnum for Raft<Leader> {
     }
 }
 
+#[derive(Clone)]
+pub struct Member {
+    addr: Address,
+    id: String,
+}
+
+impl Member {
+    pub fn new(addr: Address, id: String) -> Self {
+        Member { addr, id }
+    }
+    pub fn addr(&self) -> Address {
+        self.addr
+    }
+}
+
 struct RaftInner {
-    candidate_id: String,
+    peers: Vec<Member>,
+    id: String,
     tx: Sender<Message>,
     term: i32,
     voted_for: Option<String>,
@@ -146,15 +160,16 @@ impl RaftInner {
 
     fn start_election(mut self) -> Raft<Candidate> {
         self.new_term();
-        self.voted_for = Some(self.candidate_id.clone());
+        self.voted_for = Some(self.id.clone());
         let votes = 1;
         let timeout = spawn_timer(&self.tx);
         let candidate = Candidate { votes, timeout };
-        request_votes(&self.tx, self.term);
-        Raft {
+        let mut raft = Raft {
             inner: self,
             state: candidate,
-        }
+        };
+        raft.request_votes();
+        raft
     }
 
     fn vote(&mut self, term: i32, candidate_id: String, oneshot: Oneshot<Reply>) {
@@ -231,6 +246,22 @@ impl Raft<Candidate> {
         }
     }
 
+    fn request_votes(&mut self) {
+        for peer in &self.inner.peers {
+            let mut vote_tx = self.inner.tx.clone();
+            let term = self.inner.term;
+            let candidate_id = self.inner.id.clone();
+            let peer = peer.clone();
+            tokio::spawn(async move {
+                let result = request_vote(peer, term, candidate_id).await;
+                if let Ok(reply) = result {
+                    let msg = Message::Vote(reply);
+                    let _ = vote_tx.send(msg).await;
+                }
+            });
+        }
+    }
+
     fn append_entries(mut self, term: i32, oneshot: Oneshot<Reply>) -> Variant {
         let success = self.inner.append_entries(term, oneshot);
         if success {
@@ -243,7 +274,7 @@ impl Raft<Candidate> {
     fn timeout(mut self) -> Variant {
         self.state.votes = 1;
         self.state.timeout = spawn_timer(&self.inner.tx);
-        request_votes(&self.inner.tx, self.inner.term);
+        self.request_votes();
         self.into_enum()
     }
 
@@ -254,7 +285,10 @@ impl Raft<Candidate> {
             *votes += 1;
         }
 
-        if *votes >= QUORUM {
+        let num_nodes = self.inner.peers.len() as u8 + 1;
+        let quorum = (num_nodes / 2) + 1;
+
+        if *votes >= quorum {
             self.into_leader().into_enum()
         } else {
             self.into_enum()
@@ -301,21 +335,6 @@ fn spawn_timer(tx: &Sender<Message>) -> Timeout {
     Timeout { abort_handle }
 }
 
-// TODO: the individual operations can fail, is it a 'no' vote?
-fn request_votes(tx: &Sender<Message>, term: i32) {
-    for n in 1..NUM_NODES {
-        let mut vote_tx = tx.clone();
-        let delay = delay_for(Duration::from_secs(1 + n as u64));
-        tokio::spawn(async move {
-            delay.await;
-            vote_tx
-                .send(Message::Vote((term, true)))
-                .await
-                .expect("channel error");
-        });
-    }
-}
-
 #[cfg(test)]
 mod follower {
     use super::*;
@@ -323,13 +342,25 @@ mod follower {
     use tokio::sync::mpsc;
     use tokio::time::timeout;
 
+    // fn create_membiers() -> Vec<Member> {
+    //     (0..2)
+    //         .into_iter()
+    //         .map(|i| {
+    //             let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 10000 + i);
+    //             let id = format!("test-{}", i);
+    //             Member::new(addr, id)
+    //         })
+    //         .collect()
+    // }
+
     fn new_follower(tx: Sender<Message>) -> Raft<Follower> {
         let timeout = spawn_timer(&tx);
         let voted_for = None;
         let term = 0;
-        let candidate_id = "test".to_string();
+        let id = "test".to_string();
         let inner = RaftInner {
-            candidate_id,
+            peers: vec![],
+            id,
             term,
             tx,
             voted_for,
@@ -365,19 +396,10 @@ mod inner {
     use tokio::sync::{mpsc, oneshot};
     use tokio::time::timeout;
 
-    impl Message {
-        fn vote(self) -> Option<bool> {
-            if let Self::Vote((_, b)) = self {
-                Some(b)
-            } else {
-                None
-            }
-        }
-    }
-
     fn new_inner(tx: Sender<Message>) -> RaftInner {
         RaftInner {
-            candidate_id: "test".to_string(),
+            peers: vec![],
+            id: "test".to_string(),
             voted_for: Some("test".to_string()),
             term: 42,
             tx,
@@ -415,38 +437,20 @@ mod inner {
             .unwrap();
         assert_eq!(vote_granted, false);
     }
-
-    #[tokio::test]
-    async fn start_election() {
-        let n: usize = NUM_NODES as usize - 1;
-        let (tx, mut rx) = mpsc::channel(1);
-        let inner = new_inner(tx);
-        inner.start_election();
-        for _ in 0..n {
-            let message = timeout(
-                Duration::from_millis(NUM_NODES as u64 * 1000 + 100),
-                rx.recv(),
-            )
-            .await
-            .expect("test takes too long")
-            .unwrap();
-            // because we mocked the voting
-            let yes = message.vote().expect("should be a vote message");
-            assert_eq!(yes, true);
-        }
-    }
 }
 
 #[cfg(test)]
 mod candidate {
     use super::*;
     use enum_extract::let_extract;
+    use std::net::{Ipv4Addr, SocketAddrV4};
     use tokio::sync::mpsc;
     use tokio::time::timeout;
 
     fn new_candidate(tx: Sender<Message>) -> Raft<Candidate> {
         let inner = RaftInner {
-            candidate_id: "test".to_string(),
+            peers: vec![],
+            id: "test".to_string(),
             voted_for: Some("test".to_string()),
             term: 42,
             tx: tx.clone(),
@@ -502,7 +506,18 @@ mod candidate {
     #[tokio::test]
     async fn receiving_votes() {
         let (tx, _) = mpsc::channel(1);
-        let candidate = new_candidate(tx);
+        let mut candidate = new_candidate(tx);
+        let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 10000);
+        candidate.inner.peers = vec![
+            Member {
+                addr,
+                id: "peer-1".to_string(),
+            },
+            Member {
+                addr,
+                id: "peer-2".to_string(),
+            },
+        ];
         let vote = (42, true);
         let mut variant = candidate.receive_vote(vote);
         let_extract!(Variant::Candidate(candidate), variant, panic!());
@@ -531,13 +546,14 @@ mod candidate {
     }
 }
 
-pub async fn message_loop(mut rx: Receiver<Message>, tx: Sender<Message>) {
+pub async fn message_loop(peers: Vec<Member>, mut rx: Receiver<Message>, tx: Sender<Message>) {
     let timeout = spawn_timer(&tx);
     let voted_for = None;
     let term = 0;
-    let candidate_id = "mock".to_string();
+    let id = "mock".to_string();
     let inner = RaftInner {
-        candidate_id,
+        peers,
+        id,
         term,
         tx,
         voted_for,

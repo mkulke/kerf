@@ -1,12 +1,14 @@
 use anyhow::Result;
 use futures::future::join;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc, oneshot};
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
 
+pub mod network;
 pub mod raft;
-use raft::{message_loop, Message, Reply, Rpc};
+use raft::{message_loop, Member, Message, Reply, Rpc};
 
 pub mod proto {
     tonic::include_proto!("raft");
@@ -89,5 +91,12 @@ async fn listen(tx: Sender<Message>) {
 #[tokio::main]
 async fn main() {
     let (tx, rx) = mpsc::channel(100);
-    join(listen(tx.clone()), message_loop(rx, tx.clone())).await;
+    let peers = (0..2)
+        .map(|i| {
+            let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 10000 + i);
+            let id = format!("peer-{}", i);
+            Member::new(addr, id)
+        })
+        .collect();
+    join(listen(tx.clone()), message_loop(peers, rx, tx.clone())).await;
 }
