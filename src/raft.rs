@@ -9,7 +9,13 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::time::delay_for;
 
-const TIMEOUT: u64 = 5;
+const ELECTION_TIMEOUT: u64 = 2000;
+const HEARTBEAT_TIMEOUT: u64 = 200;
+
+enum Timer {
+    Election,
+    Heartbeat,
+}
 
 type Oneshot<T> = oneshot::Sender<T>;
 pub type Reply = (i32, bool);
@@ -49,7 +55,7 @@ impl Variant {
 
         inner.term = term;
 
-        let timeout = spawn_timer(&inner.tx);
+        let timeout = inner.spawn_timer(Timer::Election);
         let state = Follower { timeout };
         let raft = Raft { inner, state };
 
@@ -74,8 +80,8 @@ impl Variant {
             (Follower(f), VoteRequest((i, o))) => f.vote(term, i, o),
             (Candidate(c), AppendEntries(o)) => c.append_entries(term, o),
             (Candidate(c), VoteRequest((i, o))) => c.vote(term, i, o),
-            (Leader(_), AppendEntries(_)) => todo!(),
-            (Leader(_), VoteRequest(_)) => todo!(),
+            (Leader(l), AppendEntries(_)) => l.into_enum(),
+            (Leader(l), VoteRequest(_)) => l.into_enum(),
         }
     }
 
@@ -94,7 +100,7 @@ impl Variant {
             TimerElapsed => match self {
                 Follower(f) => f.timeout(),
                 Candidate(c) => c.timeout(),
-                Leader(l) => l.into_enum(),
+                Leader(l) => l.timeout(),
             },
             Vote(v) => match self {
                 Follower(f) => f.into_enum(),
@@ -162,7 +168,7 @@ impl RaftInner {
         self.new_term();
         self.voted_for = Some(self.id.clone());
         let votes = 1;
-        let timeout = spawn_timer(&self.tx);
+        let timeout = self.spawn_timer(Timer::Election);
         let candidate = Candidate { votes, timeout };
         let mut raft = Raft {
             inner: self,
@@ -170,6 +176,22 @@ impl RaftInner {
         };
         raft.request_votes();
         raft
+    }
+
+    fn spawn_timer(&self, timer: Timer) -> Timeout {
+        let ms = match timer {
+            Timer::Election => ELECTION_TIMEOUT,
+            Timer::Heartbeat => HEARTBEAT_TIMEOUT,
+        };
+        let delay = delay_for(Duration::from_millis(ms));
+        let (abortable_delay, abort_handle) = abortable(delay);
+        let mut tx = self.tx.clone();
+        tokio::spawn(async move {
+            if abortable_delay.await.is_ok() {
+                tx.send(Message::TimerElapsed).await.expect("channel error");
+            }
+        });
+        Timeout { abort_handle }
     }
 
     fn vote(&mut self, term: i32, candidate_id: String, oneshot: Oneshot<Reply>) {
@@ -224,21 +246,23 @@ impl Raft<Follower> {
 
     fn append_entries(mut self, term: i32, oneshot: Oneshot<Reply>) -> Variant {
         self.inner.append_entries(term, oneshot);
-        self.state.timeout = spawn_timer(&self.inner.tx.clone());
+        self.state.timeout = self.inner.spawn_timer(Timer::Election);
         self.into_enum()
     }
 }
 
 impl Raft<Candidate> {
     fn into_leader(self) -> Raft<Leader> {
+        let timeout = self.inner.spawn_timer(Timer::Heartbeat);
+        let state = Leader { timeout };
         Raft {
             inner: self.inner,
-            state: Leader,
+            state,
         }
     }
 
     fn into_follower(self) -> Raft<Follower> {
-        let timeout = spawn_timer(&self.inner.tx);
+        let timeout = self.inner.spawn_timer(Timer::Election);
         let follower = Follower { timeout };
         Raft {
             inner: self.inner,
@@ -273,7 +297,7 @@ impl Raft<Candidate> {
 
     fn timeout(mut self) -> Variant {
         self.state.votes = 1;
-        self.state.timeout = spawn_timer(&self.inner.tx);
+        self.state.timeout = self.inner.spawn_timer(Timer::Election);
         self.request_votes();
         self.into_enum()
     }
@@ -301,6 +325,13 @@ impl Raft<Candidate> {
     }
 }
 
+impl Raft<Leader> {
+    fn timeout(mut self) -> Variant {
+        self.state.timeout = self.inner.spawn_timer(Timer::Heartbeat);
+        self.into_enum()
+    }
+}
+
 struct Follower {
     timeout: Timeout,
 }
@@ -310,7 +341,9 @@ struct Candidate {
     votes: u8,
 }
 
-struct Leader;
+struct Leader {
+    timeout: Timeout,
+}
 
 #[derive(Debug)]
 struct Timeout {
@@ -321,18 +354,6 @@ impl Drop for Timeout {
     fn drop(&mut self) {
         self.abort_handle.abort();
     }
-}
-
-fn spawn_timer(tx: &Sender<Message>) -> Timeout {
-    let delay = delay_for(Duration::from_secs(TIMEOUT));
-    let (abortable_delay, abort_handle) = abortable(delay);
-    let mut tx = tx.clone();
-    tokio::spawn(async move {
-        if abortable_delay.await.is_ok() {
-            tx.send(Message::TimerElapsed).await.expect("channel error");
-        }
-    });
-    Timeout { abort_handle }
 }
 
 #[cfg(test)]
@@ -354,7 +375,6 @@ mod follower {
     // }
 
     fn new_follower(tx: Sender<Message>) -> Raft<Follower> {
-        let timeout = spawn_timer(&tx);
         let voted_for = None;
         let term = 0;
         let id = "test".to_string();
@@ -365,6 +385,7 @@ mod follower {
             tx,
             voted_for,
         };
+        let timeout = inner.spawn_timer(Timer::Election);
         let state = Follower { timeout };
         Raft { inner, state }
     }
@@ -374,10 +395,10 @@ mod follower {
         let (tx, mut rx) = mpsc::channel(1);
         let follower = new_follower(tx.clone());
         let (resp_tx, _resp_rx) = oneshot::channel();
-        delay_for(Duration::from_secs(1)).await;
+        delay_for(Duration::from_millis(100)).await;
         let _variant = follower.append_entries(0, resp_tx);
-        let result = timeout(Duration::from_millis(TIMEOUT * 1000 - 100), rx.recv()).await;
-        assert!(result.is_err(), "there should be no follower timeout");
+        let result = timeout(Duration::from_millis(ELECTION_TIMEOUT - 100), rx.recv()).await;
+        assert!(result.is_err(), "there should be no election timeout");
     }
 
     #[tokio::test]
@@ -395,6 +416,7 @@ mod inner {
     use super::*;
     use tokio::sync::{mpsc, oneshot};
     use tokio::time::timeout;
+    const TIMEOUT: u64 = 5000;
 
     fn new_inner(tx: Sender<Message>) -> RaftInner {
         RaftInner {
@@ -413,7 +435,7 @@ mod inner {
         inner.voted_for = None;
         let (resp_tx, resp_rx) = oneshot::channel();
         inner.vote(42, "test".to_string(), resp_tx);
-        let (term, vote_granted) = timeout(Duration::from_millis(TIMEOUT * 1000 - 100), resp_rx)
+        let (term, vote_granted) = timeout(Duration::from_millis(TIMEOUT - 100), resp_rx)
             .await
             .expect("test takes too long")
             .unwrap();
@@ -423,7 +445,7 @@ mod inner {
         inner.voted_for = Some("one".to_string());
         let (resp_tx, resp_rx) = oneshot::channel();
         inner.vote(42, "other".to_string(), resp_tx);
-        let (_, vote_granted) = timeout(Duration::from_millis(TIMEOUT * 1000 - 100), resp_rx)
+        let (_, vote_granted) = timeout(Duration::from_millis(TIMEOUT - 100), resp_rx)
             .await
             .expect("test takes too long")
             .unwrap();
@@ -431,7 +453,7 @@ mod inner {
 
         let (resp_tx, resp_rx) = oneshot::channel();
         inner.vote(41, "test".to_string(), resp_tx);
-        let (_, vote_granted) = timeout(Duration::from_millis(TIMEOUT * 1000 - 100), resp_rx)
+        let (_, vote_granted) = timeout(Duration::from_millis(TIMEOUT - 100), resp_rx)
             .await
             .expect("test takes too long")
             .unwrap();
@@ -446,6 +468,7 @@ mod candidate {
     use std::net::{Ipv4Addr, SocketAddrV4};
     use tokio::sync::mpsc;
     use tokio::time::timeout;
+    const TIMEOUT: u64 = 5000;
 
     fn new_candidate(tx: Sender<Message>) -> Raft<Candidate> {
         let inner = RaftInner {
@@ -453,10 +476,10 @@ mod candidate {
             id: "test".to_string(),
             voted_for: Some("test".to_string()),
             term: 42,
-            tx: tx.clone(),
+            tx,
         };
         let votes = 0;
-        let timeout = spawn_timer(&tx);
+        let timeout = inner.spawn_timer(Timer::Election);
         let state = Candidate { votes, timeout };
         Raft { inner, state }
     }
@@ -494,7 +517,7 @@ mod candidate {
     async fn election_times_out() {
         let (tx, mut rx) = mpsc::channel(1);
         let _candidate = new_candidate(tx.clone());
-        let message = timeout(Duration::from_millis(TIMEOUT * 1000 + 100), rx.recv())
+        let message = timeout(Duration::from_millis(TIMEOUT + 100), rx.recv())
             .await
             .expect("test takes too long")
             .unwrap();
@@ -547,7 +570,6 @@ mod candidate {
 }
 
 pub async fn message_loop(peers: Vec<Member>, mut rx: Receiver<Message>, tx: Sender<Message>) {
-    let timeout = spawn_timer(&tx);
     let voted_for = None;
     let term = 0;
     let id = "mock".to_string();
@@ -558,6 +580,7 @@ pub async fn message_loop(peers: Vec<Member>, mut rx: Receiver<Message>, tx: Sen
         tx,
         voted_for,
     };
+    let timeout = inner.spawn_timer(Timer::Election);
     let state = Follower { timeout };
     let initial = Raft { inner, state };
 
