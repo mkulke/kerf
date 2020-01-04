@@ -2,7 +2,9 @@
 // https://yoric.github.io/post/rust-typestate
 // https://github.com/rustic-games/sm
 
-use crate::network::{request_vote, Address};
+// use crate::network::{request_vote, Address};
+use crate::transport::Addressable;
+use crate::transport::Member;
 use futures_util::future::{abortable, AbortHandle};
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -135,20 +137,20 @@ impl AsEnum for Raft<Leader> {
     }
 }
 
-#[derive(Clone)]
-pub struct Member {
-    addr: Address,
-    id: String,
-}
+// #[derive(Clone)]
+// pub struct Member {
+//     addr: Address,
+//     id_mgns: String,
+// }
 
-impl Member {
-    pub fn new(addr: Address, id: String) -> Self {
-        Member { addr, id }
-    }
-    pub fn addr(&self) -> Address {
-        self.addr
-    }
-}
+// impl Member {
+//     pub fn new(addr: Address, id: String) -> Self {
+//         Member { addr, id_mgns: id }
+//     }
+//     pub fn addr(&self) -> Address {
+//         self.addr
+//     }
+// }
 
 struct RaftInner {
     peers: Vec<Member>,
@@ -170,7 +172,7 @@ impl RaftInner {
         let votes = 1;
         let timeout = self.spawn_timer(Timer::Election);
         let candidate = Candidate { votes, timeout };
-        let mut raft = Raft {
+        let raft = Raft {
             inner: self,
             state: candidate,
         };
@@ -270,14 +272,14 @@ impl Raft<Candidate> {
         }
     }
 
-    fn request_votes(&mut self) {
+    fn request_votes(&self) {
         for peer in &self.inner.peers {
             let mut vote_tx = self.inner.tx.clone();
             let term = self.inner.term;
             let candidate_id = self.inner.id.clone();
             let peer = peer.clone();
             tokio::spawn(async move {
-                let result = request_vote(peer, term, candidate_id).await;
+                let result = peer.request_vote(term, candidate_id).await;
                 if let Ok(reply) = result {
                     let msg = Message::Vote(reply);
                     let _ = vote_tx.send(msg).await;
@@ -465,7 +467,7 @@ mod inner {
 mod candidate {
     use super::*;
     use enum_extract::let_extract;
-    use std::net::{Ipv4Addr, SocketAddrV4};
+    // use std::net::{Ipv4Addr, SocketAddrV4};
     use tokio::sync::mpsc;
     use tokio::time::timeout;
     const TIMEOUT: u64 = 5000;
@@ -530,17 +532,8 @@ mod candidate {
     async fn receiving_votes() {
         let (tx, _) = mpsc::channel(1);
         let mut candidate = new_candidate(tx);
-        let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 10000);
-        candidate.inner.peers = vec![
-            Member {
-                addr,
-                id: "peer-1".to_string(),
-            },
-            Member {
-                addr,
-                id: "peer-2".to_string(),
-            },
-        ];
+        // let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 10000);
+        candidate.inner.peers = vec![Member, Member];
         let vote = (42, true);
         let mut variant = candidate.receive_vote(vote);
         let_extract!(Variant::Candidate(candidate), variant, panic!());
