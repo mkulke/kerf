@@ -1,6 +1,6 @@
 use anyhow::Result;
-use futures::future::join;
 // use std::net::{Ipv4Addr, SocketAddrV4};
+use tokio::join;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc, oneshot};
 use tonic::transport::Server;
@@ -100,5 +100,5 @@ async fn main() {
             Member::default()
         })
         .collect();
-    join(listen(tx.clone()), message_loop(peers, rx, tx.clone())).await;
+    join!(listen(tx.clone()), message_loop(peers, rx, tx.clone()));
 }
